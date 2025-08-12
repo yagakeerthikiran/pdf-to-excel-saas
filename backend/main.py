@@ -1,17 +1,33 @@
 import os
 import boto3
 import stripe
+import sentry_sdk
 from botocore.exceptions import ClientError
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import backend.user_service as user_service
+import structlog
+from backend.logging_config import setup_logging
 
 # Load environment variables from .env file
 load_dotenv()
 
+# Set up logging
+setup_logging()
+logger = structlog.get_logger(__name__)
+
 # Configure Stripe API key
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+
+# Configure Sentry
+sentry_dsn = os.getenv("SENTRY_DSN")
+if sentry_dsn:
+    sentry_sdk.init(
+        dsn=sentry_dsn,
+        # Enable performance monitoring
+        traces_sample_rate=1.0,
+    )
 
 app = FastAPI(
     title="PDF to Excel API",
@@ -78,6 +94,7 @@ def generate_upload_url(req: GenerateUploadUrlRequest):
     object_key = f"uploads/{req.filename}"
 
     try:
+        logger.info("Generating pre-signed URL", bucket=bucket_name, key=object_key)
         response = s3_client.generate_presigned_post(
             Bucket=bucket_name,
             Key=object_key,
@@ -86,7 +103,7 @@ def generate_upload_url(req: GenerateUploadUrlRequest):
             ExpiresIn=3600  # URL expires in 1 hour
         )
     except ClientError as e:
-        print(f"Error generating pre-signed URL: {e}")
+        logger.error("Error generating pre-signed URL", error=str(e))
         raise HTTPException(status_code=500, detail="Could not generate upload URL.")
 
     return response
@@ -115,9 +132,10 @@ def create_checkout_session(req: CheckoutSessionRequest):
             success_url=f'{base_url}/dashboard?success=true&session_id={{CHECKOUT_SESSION_ID}}',
             cancel_url=f'{base_url}/dashboard?canceled=true',
         )
+        logger.info("Created Stripe Checkout session", session_id=checkout_session.id)
         return {"session_id": checkout_session.id}
     except Exception as e:
-        print(f"Error creating checkout session: {e}")
+        logger.error("Error creating checkout session", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -142,23 +160,50 @@ async def stripe_webhook(request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
     # Handle the event
-    if event['type'] == 'checkout.session.completed':
+    event_type = event['type']
+    logger.info("Received Stripe webhook", event_type=event_type)
+
+    if event_type == 'checkout.session.completed':
         session = event['data']['object']
         client_reference_id = session.get('client_reference_id')
         if client_reference_id:
-            print(f"Checkout session completed for user: {client_reference_id}. Updating status to 'pro'.")
+            logger.info(
+                "Checkout session completed, updating user status.",
+                user_id=client_reference_id,
+                new_status='pro'
+            )
             user_service.update_subscription_status(client_reference_id, 'pro')
         else:
-            print("Warning: checkout.session.completed event received without a client_reference_id.")
-    elif event['type'] == 'customer.subscription.deleted':
+            logger.warn("checkout.session.completed event received without client_reference_id.")
+    elif event_type == 'customer.subscription.deleted':
         session = event['data']['object']
-        # This is a bit more complex, we'd need to get the user_id from the customer_id
-        print(f"Subscription deleted for customer: {session.get('customer')}. Setting status to 'free'.")
-        # user_service.update_subscription_status_by_customer(session.get('customer'), 'free')
+        customer_id = session.get('customer')
+        logger.info(
+            "Subscription deleted, updating user status.",
+            customer_id=customer_id,
+            new_status='free'
+        )
+        # user_service.update_subscription_status_by_customer(customer_id, 'free')
     else:
-        print(f"Unhandled event type {event['type']}")
+        logger.warn("Unhandled Stripe event type", event_type=event_type)
 
     return {"status": "success"}
+
+
+@app.post("/handle-sentry-alert")
+async def handle_sentry_alert(request: Request):
+    """
+    Handles incoming webhooks from Sentry for new issues.
+    This is the entrypoint for the auto-fix workflow.
+    """
+    payload = await request.json()
+    logger.info("Received Sentry alert webhook", payload=payload)
+
+    # In a real implementation, this would trigger the monitoring script
+    # to create a branch and a failing test.
+    # For now, we just log that we received it.
+
+    return {"status": "received"}
 
 
 @app.post("/convert", response_model=ConversionResponse)
@@ -168,7 +213,7 @@ async def convert_pdf(req: ConversionRequest):
     This will be replaced with actual conversion logic.
     It receives the S3 key of the uploaded file.
     """
-    print(f"Received request to convert file with key: {req.fileKey}")
+    logger.info("Received request to convert file", file_key=req.fileKey)
 
     # Placeholder for actual conversion logic
     # 1. Download file from S3 using fileKey

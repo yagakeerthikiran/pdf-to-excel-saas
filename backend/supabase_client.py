@@ -1,5 +1,8 @@
 import os
+import structlog
 from supabase import create_client, Client
+
+logger = structlog.get_logger(__name__)
 
 # Get Supabase credentials from environment variables
 url: str = os.environ.get("SUPABASE_URL")
@@ -11,7 +14,7 @@ supabase: Client = None
 if url and key:
     supabase = create_client(url, key)
 else:
-    print("Warning: Supabase URL or Service Key not found. Supabase client not initialized.")
+    logger.warn("Supabase URL or Service Key not found. Supabase client not initialized.")
 
 def get_supabase_client() -> Client:
     """

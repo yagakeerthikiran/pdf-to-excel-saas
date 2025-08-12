@@ -122,10 +122,26 @@ These are for error tracking and product analytics.
 
 ### Sentry
 
-**Location:** `backend/.env` AND `frontend/.env.local`
+**Location:** `frontend/.env.local`
 ```
-# The DSN for your Sentry project
+# The DSN for your Sentry project, used to send events.
 NEXT_PUBLIC_SENTRY_DSN=
+```
+
+**Location:** `backend/.env`
+```
+# The DSN for your Sentry project, used to send events.
+SENTRY_DSN=
+```
+
+**Location:** a `.env` file in the `frontend/` directory (for build-time access)
+```
+# Your Sentry organization slug.
+SENTRY_ORG=
+# Your Sentry project slug.
+SENTRY_PROJECT=
+# An auth token with `project:releases` scope for uploading sourcemaps.
+SENTRY_AUTH_TOKEN=
 ```
 
 ### PostHog
@@ -136,6 +152,14 @@ NEXT_PUBLIC_SENTRY_DSN=
 NEXT_PUBLIC_POSTHOG_KEY=
 # The URL of your PostHog instance
 NEXT_PUBLIC_POSTHOG_HOST=https://app.posthog.com
+```
+
+**Location:** `backend/.env`
+```
+# Your PostHog project API key (for server-side events)
+POSTHOG_API_KEY=
+# The URL of your PostHog instance
+POSTHOG_API_HOST=https://app.posthog.com
 ```
 
 **How to get them:**

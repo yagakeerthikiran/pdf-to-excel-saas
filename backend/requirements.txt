@@ -5,3 +5,6 @@ mangum
 boto3
 supabase
 stripe
+sentry-sdk[fastapi]
+posthog
+structlog
