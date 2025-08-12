@@ -8,3 +8,5 @@ stripe
 sentry-sdk[fastapi]
 posthog
 structlog
+pdfplumber
+openpyxl

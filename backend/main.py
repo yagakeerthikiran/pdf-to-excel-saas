@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import backend.user_service as user_service
 import structlog
 from backend.logging_config import setup_logging
+from backend.conversion_service import convert_pdf_to_excel
 
 # Load environment variables from .env file
 load_dotenv()
@@ -87,10 +88,6 @@ def generate_upload_url(req: GenerateUploadUrlRequest):
     """
     s3_client = boto3.client('s3', region_name=os.getenv("AWS_REGION"))
     bucket_name = os.getenv("S3_BUCKET_NAME")
-
-    # The key is the path to the file in the S3 bucket.
-    # We can add a user ID or a UUID here to make it unique.
-    # For now, we'll just use the filename.
     object_key = f"uploads/{req.filename}"
 
     try:
@@ -100,7 +97,7 @@ def generate_upload_url(req: GenerateUploadUrlRequest):
             Key=object_key,
             Fields={"Content-Type": req.content_type},
             Conditions=[{"Content-Type": req.content_type}],
-            ExpiresIn=3600  # URL expires in 1 hour
+            ExpiresIn=3600
         )
     except ClientError as e:
         logger.error("Error generating pre-signed URL", error=str(e))
@@ -115,19 +112,11 @@ def create_checkout_session(req: CheckoutSessionRequest):
     Creates a Stripe Checkout session for a given price ID.
     """
     try:
-        # For now, we get the base URL from an env var.
-        # This will be the URL of our deployed frontend.
         base_url = os.getenv("BASE_URL", "http://localhost:3000")
-
         checkout_session = stripe.checkout.Session.create(
             client_reference_id=req.user_id,
             payment_method_types=['card'],
-            line_items=[
-                {
-                    'price': req.price_id,
-                    'quantity': 1,
-                },
-            ],
+            line_items=[{'price': req.price_id, 'quantity': 1}],
             mode='subscription',
             success_url=f'{base_url}/dashboard?success=true&session_id={{CHECKOUT_SESSION_ID}}',
             cancel_url=f'{base_url}/dashboard?canceled=true',
@@ -147,46 +136,29 @@ async def stripe_webhook(request: Request):
     payload = await request.body()
     sig_header = request.headers.get('stripe-signature')
     endpoint_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
-
     try:
-        event = stripe.Webhook.construct_event(
-            payload=payload, sig_header=sig_header, secret=endpoint_secret
-        )
+        event = stripe.Webhook.construct_event(payload=payload, sig_header=sig_header, secret=endpoint_secret)
     except ValueError as e:
-        # Invalid payload
         raise HTTPException(status_code=400, detail=str(e))
     except stripe.error.SignatureVerificationError as e:
-        # Invalid signature
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Handle the event
     event_type = event['type']
     logger.info("Received Stripe webhook", event_type=event_type)
-
     if event_type == 'checkout.session.completed':
         session = event['data']['object']
         client_reference_id = session.get('client_reference_id')
         if client_reference_id:
-            logger.info(
-                "Checkout session completed, updating user status.",
-                user_id=client_reference_id,
-                new_status='pro'
-            )
+            logger.info("Checkout session completed, updating user status.", user_id=client_reference_id, new_status='pro')
             user_service.update_subscription_status(client_reference_id, 'pro')
         else:
             logger.warn("checkout.session.completed event received without client_reference_id.")
     elif event_type == 'customer.subscription.deleted':
         session = event['data']['object']
         customer_id = session.get('customer')
-        logger.info(
-            "Subscription deleted, updating user status.",
-            customer_id=customer_id,
-            new_status='free'
-        )
-        # user_service.update_subscription_status_by_customer(customer_id, 'free')
+        logger.info("Subscription deleted, updating user status.", customer_id=customer_id, new_status='free')
     else:
         logger.warn("Unhandled Stripe event type", event_type=event_type)
-
     return {"status": "success"}
 
 
@@ -194,35 +166,61 @@ async def stripe_webhook(request: Request):
 async def handle_sentry_alert(request: Request):
     """
     Handles incoming webhooks from Sentry for new issues.
-    This is the entrypoint for the auto-fix workflow.
     """
     payload = await request.json()
     logger.info("Received Sentry alert webhook", payload=payload)
-
-    # In a real implementation, this would trigger the monitoring script
-    # to create a branch and a failing test.
-    # For now, we just log that we received it.
-
     return {"status": "received"}
 
 
 @app.post("/convert", response_model=ConversionResponse)
 async def convert_pdf(req: ConversionRequest):
     """
-    Mock endpoint for PDF to Excel conversion.
-    This will be replaced with actual conversion logic.
-    It receives the S3 key of the uploaded file.
+    Downloads a PDF from S3, converts it to Excel, and returns a download URL.
     """
     logger.info("Received request to convert file", file_key=req.fileKey)
 
-    # Placeholder for actual conversion logic
-    # 1. Download file from S3 using fileKey
-    # 2. Process with pdfplumber/camelot
-    # 3. Upload resulting Excel to S3
-    # 4. Generate a pre-signed URL for the Excel file
+    s3_client = boto3.client('s3', region_name=os.getenv("AWS_REGION"))
+    bucket_name = os.getenv("S3_BUCKET_NAME")
 
-    return {
-        "success": True,
-        "message": f"File '{req.fileKey}' converted successfully (mock response).",
-        "download_url": "https://example.com/mock-download-url.xlsx"
-    }
+    base_filename = os.path.splitext(os.path.basename(req.fileKey))[0]
+
+    # Define temporary file paths in the Lambda's writable /tmp directory
+    local_pdf_path = f"/tmp/{base_filename}.pdf"
+    local_excel_path = f"/tmp/{base_filename}.xlsx"
+    result_s3_key = f"results/{base_filename}.xlsx"
+
+    try:
+        # 1. Download from S3
+        logger.info("Downloading source PDF from S3", bucket=bucket_name, key=req.fileKey)
+        s3_client.download_file(bucket_name, req.fileKey, local_pdf_path)
+
+        # 2. Call Conversion Service
+        convert_pdf_to_excel(local_pdf_path, local_excel_path)
+
+        # 3. Upload to S3
+        logger.info("Uploading result Excel to S3", bucket=bucket_name, key=result_s3_key)
+        s3_client.upload_file(local_excel_path, bucket_name, result_s3_key)
+
+        # 4. Generate Download URL
+        logger.info("Generating download URL for result file", bucket=bucket_name, key=result_s3_key)
+        download_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket_name, 'Key': result_s3_key},
+            ExpiresIn=3600  # URL expires in 1 hour
+        )
+
+        return {
+            "success": True,
+            "message": "File converted successfully.",
+            "download_url": download_url
+        }
+
+    except Exception as e:
+        logger.error("An error occurred during the conversion process", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail="An internal error occurred during conversion.")
+    finally:
+        # 5. Clean up temporary files
+        if os.path.exists(local_pdf_path):
+            os.remove(local_pdf_path)
+        if os.path.exists(local_excel_path):
+            os.remove(local_excel_path)
