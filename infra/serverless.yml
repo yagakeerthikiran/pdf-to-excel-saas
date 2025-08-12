@@ -1,0 +1,51 @@
+service: pdf-to-excel-converter
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: python3.11
+  region: ${env:AWS_REGION, 'us-east-1'}
+  environment:
+    S3_BUCKET_NAME: ${env:S3_BUCKET_NAME}
+    # Other secrets will be added here later
+  iam:
+    role:
+      statements:
+        - Effect: "Allow"
+          Action:
+            - "s3:PutObject"
+          Resource: "arn:aws:s3:::${env:S3_BUCKET_NAME}/*"
+
+package:
+  individually: true
+  patterns:
+    - '!./**'
+    - '../backend/**' # Package the backend code
+
+functions:
+  api:
+    handler: backend.handler.handler # Points to the handler function in backend/handler.py
+    package:
+      patterns:
+        - '../backend/**'
+    events:
+      - httpApi:
+          path: /
+          method: any
+      - httpApi:
+          path: /{proxy+}
+          method: any
+
+plugins:
+  - serverless-python-requirements
+
+custom:
+  pythonRequirements:
+    dockerizePip: true
+    layer: true
+    python: python3.11
+    requirementsFile: ../backend/requirements.txt
+    # The dependencies will be in a layer, the code in the function package.
+    # We need to ensure the backend code is included.
+    # The package patterns above should handle this.

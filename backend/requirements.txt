@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+mangum
+boto3
+supabase
