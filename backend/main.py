@@ -1,12 +1,17 @@
 import os
 import boto3
+import stripe
 from botocore.exceptions import ClientError
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from dotenv import load_dotenv
+import backend.user_service as user_service
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Configure Stripe API key
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
 app = FastAPI(
     title="PDF to Excel API",
@@ -33,6 +38,15 @@ class GenerateUploadUrlResponse(BaseModel):
 
 class ConversionRequest(BaseModel):
     fileKey: str
+
+
+class CheckoutSessionRequest(BaseModel):
+    price_id: str
+    user_id: str # This is a temporary solution for passing the user ID.
+
+
+class CheckoutSessionResponse(BaseModel):
+    session_id: str
 
 @app.get("/")
 def read_root():
@@ -76,6 +90,75 @@ def generate_upload_url(req: GenerateUploadUrlRequest):
         raise HTTPException(status_code=500, detail="Could not generate upload URL.")
 
     return response
+
+
+@app.post("/create-checkout-session", response_model=CheckoutSessionResponse)
+def create_checkout_session(req: CheckoutSessionRequest):
+    """
+    Creates a Stripe Checkout session for a given price ID.
+    """
+    try:
+        # For now, we get the base URL from an env var.
+        # This will be the URL of our deployed frontend.
+        base_url = os.getenv("BASE_URL", "http://localhost:3000")
+
+        checkout_session = stripe.checkout.Session.create(
+            client_reference_id=req.user_id,
+            payment_method_types=['card'],
+            line_items=[
+                {
+                    'price': req.price_id,
+                    'quantity': 1,
+                },
+            ],
+            mode='subscription',
+            success_url=f'{base_url}/dashboard?success=true&session_id={{CHECKOUT_SESSION_ID}}',
+            cancel_url=f'{base_url}/dashboard?canceled=true',
+        )
+        return {"session_id": checkout_session.id}
+    except Exception as e:
+        print(f"Error creating checkout session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/stripe-webhook")
+async def stripe_webhook(request: Request):
+    """
+    Handles incoming webhooks from Stripe.
+    """
+    payload = await request.body()
+    sig_header = request.headers.get('stripe-signature')
+    endpoint_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload=payload, sig_header=sig_header, secret=endpoint_secret
+        )
+    except ValueError as e:
+        # Invalid payload
+        raise HTTPException(status_code=400, detail=str(e))
+    except stripe.error.SignatureVerificationError as e:
+        # Invalid signature
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Handle the event
+    if event['type'] == 'checkout.session.completed':
+        session = event['data']['object']
+        client_reference_id = session.get('client_reference_id')
+        if client_reference_id:
+            print(f"Checkout session completed for user: {client_reference_id}. Updating status to 'pro'.")
+            user_service.update_subscription_status(client_reference_id, 'pro')
+        else:
+            print("Warning: checkout.session.completed event received without a client_reference_id.")
+    elif event['type'] == 'customer.subscription.deleted':
+        session = event['data']['object']
+        # This is a bit more complex, we'd need to get the user_id from the customer_id
+        print(f"Subscription deleted for customer: {session.get('customer')}. Setting status to 'free'.")
+        # user_service.update_subscription_status_by_customer(session.get('customer'), 'free')
+    else:
+        print(f"Unhandled event type {event['type']}")
+
+    return {"status": "success"}
 
 
 @app.post("/convert", response_model=ConversionResponse)

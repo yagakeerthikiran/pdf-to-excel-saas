@@ -23,16 +23,20 @@ def increment_conversion_count(user_id: UUID):
     # supabase.rpc('increment_conversions', {'user_id_param': user_id}).execute()
     return {"message": "Usage updated."}
 
-def update_subscription_status(user_id: UUID, status: str):
+def update_subscription_status(user_id: str, status: str):
     """
     Updates the subscription status of a user.
     """
     supabase = get_supabase_client()
-    # Placeholder logic
-    print(f"Updating subscription for {user_id} to {status}")
-    # response = supabase.table('profiles').update({'subscription_status': status}).eq('id', user_id).execute()
-    # return response.data
-    return {"message": "Subscription status updated."}
+    try:
+        response = supabase.table('profiles').update({'subscription_status': status}).eq('id', user_id).execute()
+        if len(response.data) == 0:
+            print(f"Warning: No profile found for user_id {user_id} to update status.")
+            return None
+        return response.data[0]
+    except Exception as e:
+        print(f"Error updating subscription status for user {user_id}: {e}")
+        return None
 
 def get_usage(user_id: UUID):
     """

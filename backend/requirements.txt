@@ -4,3 +4,4 @@ python-dotenv
 mangum
 boto3
 supabase
+stripe

@@ -70,6 +70,8 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_URL=
 # The service_role key for your Supabase project (for backend use ONLY)
 SUPABASE_SERVICE_KEY=
+# The base URL of your deployed frontend application (e.g., http://localhost:3000 or your Vercel URL)
+BASE_URL=http://localhost:3000
 ```
 
 **How to get them:**
@@ -85,21 +87,22 @@ SUPABASE_SERVICE_KEY=
 
 Stripe is used for processing subscriptions.
 
-**Location:** `backend/.env` AND `frontend/.env.local`
-
+### Frontend Stripe Configuration
+**Location:** `frontend/.env.local`
 ```
-# Your Stripe public key (for the frontend)
+# Your Stripe public key
 NEXT_PUBLIC_STRIPE_PUBLIC_KEY=
-
-# Your Stripe secret key (for the backend)
-STRIPE_SECRET_KEY=
-
 # The ID of your "Monthly" subscription product in Stripe
-STRIPE_MONTHLY_PRICE_ID=
-
+NEXT_PUBLIC_STRIPE_MONTHLY_PRICE_ID=
 # The ID of your "Yearly" subscription product in Stripe
-STRIPE_YEARLY_PRICE_ID=
+NEXT_PUBLIC_STRIPE_YEARLY_PRICE_ID=
+```
 
+### Backend Stripe Configuration
+**Location:** `backend/.env`
+```
+# Your Stripe secret key
+STRIPE_SECRET_KEY=
 # The secret for your Stripe webhook endpoint (generate a random string)
 STRIPE_WEBHOOK_SECRET=
 ```
