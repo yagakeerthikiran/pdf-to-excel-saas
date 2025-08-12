@@ -3,13 +3,14 @@ import boto3
 import stripe
 import sentry_sdk
 from botocore.exceptions import ClientError
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import backend.user_service as user_service
 import structlog
 from backend.logging_config import setup_logging
 from backend.conversion_service import convert_pdf_to_excel
+from backend.security import enforce_usage_limits, get_current_user_id_from_header
 
 # Load environment variables from .env file
 load_dotenv()
@@ -82,9 +83,10 @@ def health_check():
 
 
 @app.post("/generate-upload-url", response_model=GenerateUploadUrlResponse)
-def generate_upload_url(req: GenerateUploadUrlRequest):
+def generate_upload_url(req: GenerateUploadUrlRequest, _: dict = Depends(enforce_usage_limits)):
     """
     Generates a pre-signed URL for uploading a file to S3.
+    This endpoint is protected by usage limit enforcement.
     """
     s3_client = boto3.client('s3', region_name=os.getenv("AWS_REGION"))
     bucket_name = os.getenv("S3_BUCKET_NAME")
@@ -92,11 +94,21 @@ def generate_upload_url(req: GenerateUploadUrlRequest):
 
     try:
         logger.info("Generating pre-signed URL", bucket=bucket_name, key=object_key)
+        # Enforce a 20MB file size limit
+        max_file_size_bytes = 20 * 1024 * 1024
+
+        conditions = [
+            {"Content-Type": req.content_type},
+            ["content-length-range", 0, max_file_size_bytes]
+        ]
+
+        fields = {"Content-Type": req.content_type}
+
         response = s3_client.generate_presigned_post(
             Bucket=bucket_name,
             Key=object_key,
-            Fields={"Content-Type": req.content_type},
-            Conditions=[{"Content-Type": req.content_type}],
+            Fields=fields,
+            Conditions=conditions,
             ExpiresIn=3600
         )
     except ClientError as e:
@@ -162,6 +174,17 @@ async def stripe_webhook(request: Request):
     return {"status": "success"}
 
 
+@app.get("/usage")
+def get_user_usage(user_id: str = Depends(get_current_user_id_from_header)):
+    """
+    Gets the current usage stats for the authenticated user.
+    """
+    usage_data = user_service.get_usage(user_id)
+    if not usage_data:
+        raise HTTPException(status_code=404, detail="User profile not found.")
+    return usage_data
+
+
 @app.post("/handle-sentry-alert")
 async def handle_sentry_alert(request: Request):
     """
@@ -173,41 +196,39 @@ async def handle_sentry_alert(request: Request):
 
 
 @app.post("/convert", response_model=ConversionResponse)
-async def convert_pdf(req: ConversionRequest):
+async def convert_pdf(req: ConversionRequest, user_id: str = Depends(get_current_user_id_from_header)):
     """
     Downloads a PDF from S3, converts it to Excel, and returns a download URL.
+    Also increments the user's conversion count.
     """
-    logger.info("Received request to convert file", file_key=req.fileKey)
+    logger.info("Received request to convert file", file_key=req.fileKey, user_id=user_id)
 
     s3_client = boto3.client('s3', region_name=os.getenv("AWS_REGION"))
     bucket_name = os.getenv("S3_BUCKET_NAME")
 
     base_filename = os.path.splitext(os.path.basename(req.fileKey))[0]
 
-    # Define temporary file paths in the Lambda's writable /tmp directory
     local_pdf_path = f"/tmp/{base_filename}.pdf"
     local_excel_path = f"/tmp/{base_filename}.xlsx"
     result_s3_key = f"results/{base_filename}.xlsx"
 
     try:
-        # 1. Download from S3
         logger.info("Downloading source PDF from S3", bucket=bucket_name, key=req.fileKey)
         s3_client.download_file(bucket_name, req.fileKey, local_pdf_path)
 
-        # 2. Call Conversion Service
         convert_pdf_to_excel(local_pdf_path, local_excel_path)
 
-        # 3. Upload to S3
         logger.info("Uploading result Excel to S3", bucket=bucket_name, key=result_s3_key)
         s3_client.upload_file(local_excel_path, bucket_name, result_s3_key)
 
-        # 4. Generate Download URL
-        logger.info("Generating download URL for result file", bucket=bucket_name, key=result_s3_key)
         download_url = s3_client.generate_presigned_url(
             'get_object',
             Params={'Bucket': bucket_name, 'Key': result_s3_key},
-            ExpiresIn=3600  # URL expires in 1 hour
+            ExpiresIn=3600
         )
+
+        user_service.increment_conversion_count(user_id)
+        logger.info("Successfully incremented conversion count for user", user_id=user_id)
 
         return {
             "success": True,
@@ -219,7 +240,6 @@ async def convert_pdf(req: ConversionRequest):
         logger.error("An error occurred during the conversion process", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail="An internal error occurred during conversion.")
     finally:
-        # 5. Clean up temporary files
         if os.path.exists(local_pdf_path):
             os.remove(local_pdf_path)
         if os.path.exists(local_excel_path):

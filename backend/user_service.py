@@ -14,15 +14,19 @@ def get_profile(user_id: UUID):
     # return response.data
     return {"message": f"Profile for {user_id} would be here."}
 
-def increment_conversion_count(user_id: UUID):
+def increment_conversion_count(user_id: str):
     """
-    Increments the free conversion count for a user.
+    Increments the free conversion count for a user by calling a database function.
     """
     supabase = get_supabase_client()
-    logger.info("Incrementing conversion count for user", user_id=str(user_id))
-    # This would involve an RPC call to a database function for atomic increment.
-    # supabase.rpc('increment_conversions', {'user_id_param': user_id}).execute()
-    return {"message": "Usage updated."}
+    try:
+        logger.info("Incrementing conversion count for user", user_id=user_id)
+        # This calls a database function to ensure the increment is atomic.
+        supabase.rpc('increment_conversions', {'user_id_param': user_id}).execute()
+    except Exception as e:
+        logger.error("Error incrementing conversion count", user_id=user_id, error=str(e))
+        # We don't re-raise here, as failing to increment is not a critical failure
+        # for the user's current request, but we must log it.
 
 def update_subscription_status(user_id: str, status: str):
     """
@@ -40,12 +44,15 @@ def update_subscription_status(user_id: str, status: str):
         logger.error("Error updating subscription status", user_id=user_id, error=str(e))
         return None
 
-def get_usage(user_id: UUID):
+def get_usage(user_id: str):
     """
     Gets the current usage stats for a user.
     """
     supabase = get_supabase_client()
-    logger.info("Getting usage for user", user_id=str(user_id))
-    # response = supabase.table('profiles').select("free_conversions_used, subscription_status").eq('id', user_id).execute()
-    # return response.data
-    return {"free_conversions_used": 0, "subscription_status": "free"}
+    try:
+        logger.info("Getting usage for user", user_id=user_id)
+        response = supabase.table('profiles').select("free_conversions_used, subscription_status").eq('id', user_id).single().execute()
+        return response.data
+    except Exception as e:
+        logger.error("Error getting usage for user", user_id=user_id, error=str(e))
+        return None

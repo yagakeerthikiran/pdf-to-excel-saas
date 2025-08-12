@@ -81,6 +81,13 @@ BASE_URL=http://localhost:3000
 4.  You will find the Project URL, the `anon` `public` key (for the frontend), and the `service_role` `secret` key (for the backend).
 5.  **NEVER expose the `service_role` key in your frontend code.**
 
+### Database Migrations
+To set up the database schema, you need to run the SQL scripts located in the `backend/sql/` directory in your Supabase project's SQL Editor.
+
+1.  Go to the SQL Editor in your Supabase dashboard.
+2.  Open and run the contents of `backend/sql/01_init_schema.sql`.
+3.  Open and run the contents of `backend/sql/02_rpc_increment_conversions.sql`.
+
 ---
 
 ## 3. Stripe Configuration
