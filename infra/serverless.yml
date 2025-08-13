@@ -16,7 +16,9 @@ provider:
           Action:
             - "s3:PutObject"
             - "s3:GetObject"
-          Resource: "arn:aws:s3:::${env:S3_BUCKET_NAME}/*"
+            - "textract:StartDocumentAnalysis"
+            - "textract:GetDocumentAnalysis"
+          Resource: "*" # Textract actions are not resource-specific in the same way as S3
 
 functions:
   api:

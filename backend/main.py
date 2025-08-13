@@ -216,7 +216,7 @@ async def convert_pdf(req: ConversionRequest, user_id: str = Depends(get_current
         logger.info("Downloading source PDF from S3", bucket=bucket_name, key=req.fileKey)
         s3_client.download_file(bucket_name, req.fileKey, local_pdf_path)
 
-        convert_pdf_to_excel(local_pdf_path, local_excel_path)
+        convert_pdf_to_excel(local_pdf_path, local_excel_path, bucket_name, req.fileKey)
 
         logger.info("Uploading result Excel to S3", bucket=bucket_name, key=result_s3_key)
         s3_client.upload_file(local_excel_path, bucket_name, result_s3_key)
