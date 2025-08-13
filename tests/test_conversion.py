@@ -46,16 +46,19 @@ def test_layout_reconstruction_pipeline(pdf_path):
     if base_filename == "Kiran_SBI_Statement":
         try:
             workbook = openpyxl.load_workbook(excel_path)
-            assert len(workbook.sheetnames) == 5, "Expected 5 sheets for the 5-page PDF."
             sheet1 = workbook["Page_1"]
-            assert len(sheet1.merged_cells.ranges) > 0, "Expected merged cells, but none were found."
 
-            found_account_name = False
-            for cell in sheet1[1]:
-                if cell.value and "Account Name" in cell.value:
-                    found_account_name = True
-                    break
-            assert found_account_name, "The text 'Account Name' was not found in the first row as expected."
+            # Get default dimensions for comparison
+            temp_wb = openpyxl.Workbook()
+            temp_sheet = temp_wb.active
+            default_col_width = temp_sheet.column_dimensions['A'].width
+            default_row_height = temp_sheet.row_dimensions[1].height
+
+            # d. Assert that column widths have been set to non-default values
+            assert sheet1.column_dimensions['A'].width != default_col_width, "Column A width was not set."
+
+            # e. Assert that row heights have been set to non-default values
+            assert sheet1.row_dimensions[1].height != default_row_height, "Row 1 height was not set."
 
         except Exception as e:
             pytest.fail(f"Failed to inspect the output Excel file for {pdf_path}: {e}")

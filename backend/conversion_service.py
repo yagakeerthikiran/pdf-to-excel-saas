@@ -3,11 +3,11 @@ import openpyxl
 from openpyxl.utils import get_column_letter
 import structlog
 from typing import List, Dict, Any
-import statistics
 
 logger = structlog.get_logger(__name__)
 
 Element = Dict[str, Any]
+GRID_COLUMNS = 200 # Define a high-resolution virtual grid for mapping
 
 def extract_elements_from_page(page) -> List[Element]:
     """
@@ -28,16 +28,18 @@ def extract_elements_from_page(page) -> List[Element]:
         "bottom": word["bottom"],
     } for word in words]
 
-def map_elements_to_sheet(sheet, elements: List[Element], page_width: float):
+def map_elements_to_sheet(sheet, elements: List[Element], page_width: float, page_height: float):
     """
-    Maps extracted elements onto an Excel sheet, including layout formatting
-    like merged cells, using a more robust while loop.
+    Maps extracted elements onto an Excel sheet using a proportional grid system.
     """
     if not elements:
         return
 
-    avg_char_width = statistics.mean((el['x1'] - el['x0']) / len(el['text']) for el in elements if el['text']) if elements else 10
+    # --- 1. Proportional Grid Calculation ---
+    # The width of each virtual column in PDF points
+    proportional_col_width = page_width / GRID_COLUMNS
 
+    # --- 2. Group elements by line ---
     lines = {}
     for el in elements:
         line_key = round(el["top"] / 5) * 5
@@ -45,71 +47,55 @@ def map_elements_to_sheet(sheet, elements: List[Element], page_width: float):
             lines[line_key] = []
         lines[line_key].append(el)
 
+    # --- 3. Place elements onto the grid ---
     sorted_lines = sorted(lines.items())
-    for row_idx, (_, line_elements) in enumerate(sorted_lines, start=1):
+    for row_idx, (line_top, line_elements) in enumerate(sorted_lines, start=1):
         line_elements.sort(key=lambda el: el["x0"])
+
+        # Set proportional row height
+        # Get the max height of any element in the line
+        if line_elements:
+            line_height_points = max(el["bottom"] - el["top"] for el in line_elements)
+            # Add a little padding
+            sheet.row_dimensions[row_idx].height = line_height_points * 1.2
 
         i = 0
         while i < len(line_elements):
             el = line_elements[i]
 
-            # Check if the cell is already part of a merged range from a previous iteration
-            # This can happen if the column estimation is not perfect.
+            # Use the new proportional mapping
+            start_col = int(el["x0"] / proportional_col_width) + 1
+
             try:
-                cell = sheet.cell(row=row_idx, column=int(el["x0"] / (avg_char_width * 1.5)) + 1)
-                if isinstance(cell, openpyxl.cell.cell.MergedCell):
+                if isinstance(sheet.cell(row=row_idx, column=start_col), openpyxl.cell.cell.MergedCell):
                     i += 1
                     continue
             except Exception:
-                # This can happen if cell coordinates are invalid, just skip
-                i+= 1
+                i += 1
                 continue
 
+            # Simplified merging logic for now. A more advanced version could handle this better.
+            # For this step, we focus on placement. We will refine merging in the next step.
+            sheet.cell(row=row_idx, column=start_col).value = el["text"]
+            i += 1
 
-            # Heuristic: if the next word is very close, merge with it.
-            is_mergable = False
-            if i + 1 < len(line_elements):
-                next_el = line_elements[i+1]
-                gap = next_el["x0"] - el["x1"]
-                if gap < (avg_char_width * 1.5):
-                    is_mergable = True
+    # --- 4. Set Proportional Column Widths ---
+    # Convert PDF points to Excel's column width units. This is an approximation.
+    # The default font character width is the basis for Excel's unit.
+    # A common heuristic is a factor of 5 to 7. Let's start with 6.
+    excel_col_width_factor = 6.0
+    proportional_excel_col_width = (page_width / GRID_COLUMNS) / excel_col_width_factor
 
-            if is_mergable:
-                merged_text_elements = [el]
-                end_el = el
-                j = i + 1
-                while j < len(line_elements):
-                    next_el = line_elements[j]
-                    if (next_el["x0"] - end_el["x1"]) < (avg_char_width * 1.5):
-                        merged_text_elements.append(next_el)
-                        end_el = next_el
-                        j += 1
-                    else:
-                        break
-
-                full_text = ' '.join([e["text"] for e in merged_text_elements])
-
-                start_col = int(el["x0"] / (avg_char_width * 1.5)) + 1
-                end_col = int(end_el["x1"] / (avg_char_width * 1.5)) + 1
-
-                if start_col <= end_col:
-                    sheet.merge_cells(start_row=row_idx, start_column=start_col, end_row=row_idx, end_column=end_col)
-                    sheet.cell(row=row_idx, column=start_col).value = full_text
-
-                i = j # Advance the main loop counter past the merged elements
-            else:
-                # Not mergable, place single word
-                col_idx = int(el["x0"] / (avg_char_width * 1.5)) + 1
-                sheet.cell(row=row_idx, column=col_idx).value = el["text"]
-                i += 1
-
+    for i in range(1, sheet.max_column + 1):
+        column_letter = get_column_letter(i)
+        sheet.column_dimensions[column_letter].width = proportional_excel_col_width
 
 def convert_pdf_to_excel(pdf_path: str, excel_path: str):
     """
-    Creates an Excel file with one sheet per PDF page, attempting to
-    reconstruct the layout with merged cells.
+    Creates an Excel file with one sheet per PDF page, using a proportional
+    grid to reconstruct the layout.
     """
-    logger.info("Starting layout-aware conversion with merging", pdf_path=pdf_path)
+    logger.info("Starting proportional layout conversion", pdf_path=pdf_path)
 
     try:
         workbook = openpyxl.Workbook()
@@ -125,11 +111,11 @@ def convert_pdf_to_excel(pdf_path: str, excel_path: str):
                 page_elements = extract_elements_from_page(page)
                 logger.info(f"Found {len(page_elements)} elements on {sheet_name}.")
 
-                map_elements_to_sheet(sheet, page_elements, float(page.width))
+                map_elements_to_sheet(sheet, page_elements, float(page.width), float(page.height))
 
         workbook.save(excel_path)
-        logger.info("Successfully created Excel file with layout formatting.", excel_path=excel_path)
+        logger.info("Successfully created Excel file with proportional mapping.", excel_path=excel_path)
 
     except Exception as e:
-        logger.error("Failed during layout-aware conversion", error=str(e), exc_info=True)
+        logger.error("Failed during proportional layout conversion", error=str(e), exc_info=True)
         raise
