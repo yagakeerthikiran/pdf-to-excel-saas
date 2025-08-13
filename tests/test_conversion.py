@@ -21,10 +21,9 @@ def setup_teardown_session():
     yield
 
 @pytest.mark.parametrize("pdf_path", pdf_files)
-def test_layout_reconstruction_pipeline(pdf_path):
+def test_phrase_reconstruction_pipeline(pdf_path):
     """
-    Tests the layout reconstruction pipeline on a given PDF file.
-    It will skip tests for encrypted or un-openable PDFs.
+    Tests the phrase reconstruction pipeline on a given PDF file.
     """
     assert os.path.exists(pdf_path), f"Sample PDF not found: {pdf_path}"
 
@@ -48,17 +47,19 @@ def test_layout_reconstruction_pipeline(pdf_path):
             workbook = openpyxl.load_workbook(excel_path)
             sheet1 = workbook["Page_1"]
 
-            # Get default dimensions for comparison
-            temp_wb = openpyxl.Workbook()
-            temp_sheet = temp_wb.active
-            default_col_width = temp_sheet.column_dimensions['A'].width
-            default_row_height = temp_sheet.row_dimensions[1].height
+            # a. Verify that a specific phrase exists in a single cell
+            found_phrase = False
+            for row in sheet1.iter_rows():
+                for cell in row:
+                    if cell.value and "Account Statement from" in str(cell.value):
+                        found_phrase = True
+                        break
+                if found_phrase:
+                    break
+            assert found_phrase, "The phrase 'Account Statement from' was not found in a single cell."
 
-            # d. Assert that column widths have been set to non-default values
-            assert sheet1.column_dimensions['A'].width != default_col_width, "Column A width was not set."
-
-            # e. Assert that row heights have been set to non-default values
-            assert sheet1.row_dimensions[1].height != default_row_height, "Row 1 height was not set."
+            # b. Verify that the number of columns is reasonable
+            assert sheet1.max_column < 35, f"Expected a reasonable number of columns (< 35), but got {sheet1.max_column}."
 
         except Exception as e:
             pytest.fail(f"Failed to inspect the output Excel file for {pdf_path}: {e}")
