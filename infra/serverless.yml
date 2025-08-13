@@ -4,7 +4,7 @@ frameworkVersion: '3'
 
 provider:
   name: aws
-  runtime: python3.11
+  runtime: python3.11 # This is now informational, the runtime is defined in the Docker image
   region: ${env:AWS_REGION, 'us-east-1'}
   environment:
     S3_BUCKET_NAME: ${env:S3_BUCKET_NAME}
@@ -15,21 +15,13 @@ provider:
         - Effect: "Allow"
           Action:
             - "s3:PutObject"
-              - "s3:GetObject"
+            - "s3:GetObject"
           Resource: "arn:aws:s3:::${env:S3_BUCKET_NAME}/*"
-
-package:
-  individually: true
-  patterns:
-    - '!./**'
-    - '../backend/**' # Package the backend code
 
 functions:
   api:
-    handler: backend.handler.handler # Points to the handler function in backend/handler.py
-    package:
-      patterns:
-        - '../backend/**'
+    # Pointing to the directory containing the Dockerfile
+    image: ../backend
     events:
       - httpApi:
           path: /
@@ -37,16 +29,3 @@ functions:
       - httpApi:
           path: /{proxy+}
           method: any
-
-plugins:
-  - serverless-python-requirements
-
-custom:
-  pythonRequirements:
-    dockerizePip: true
-    layer: true
-    python: python3.11
-    requirementsFile: ../backend/requirements.txt
-    # The dependencies will be in a layer, the code in the function package.
-    # We need to ensure the backend code is included.
-    # The package patterns above should handle this.

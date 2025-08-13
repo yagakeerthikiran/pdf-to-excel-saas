@@ -10,3 +10,4 @@ posthog
 structlog
 pdfplumber
 openpyxl
+camelot-py[cv]
