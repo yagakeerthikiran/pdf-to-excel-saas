@@ -21,9 +21,9 @@ def setup_teardown_session():
     yield
 
 @pytest.mark.parametrize("pdf_path", pdf_files)
-def test_phrase_reconstruction_pipeline(pdf_path):
+def test_vision_assisted_conversion_pipeline(pdf_path):
     """
-    Tests the phrase reconstruction pipeline on a given PDF file.
+    Tests the vision-assisted conversion pipeline on a given PDF file.
     """
     assert os.path.exists(pdf_path), f"Sample PDF not found: {pdf_path}"
 
@@ -41,25 +41,42 @@ def test_phrase_reconstruction_pipeline(pdf_path):
     assert os.path.exists(excel_path), f"Output Excel file was not created for {pdf_path}"
     assert os.path.getsize(excel_path) > 0, f"The output Excel file for {pdf_path} is empty."
 
-    # --- Specific Assertions for Kiran_SBI_Statement.pdf ---
-    if base_filename == "Kiran_SBI_Statement":
+    # --- Specific Assertions for the NAB Statement ---
+    if "NAB" in base_filename:
         try:
             workbook = openpyxl.load_workbook(excel_path)
-            sheet1 = workbook["Page_1"]
+            # Assuming the main table is the first one found
+            table_sheet = workbook["Table_1_Page_1"]
 
-            # a. Verify that a specific phrase exists in a single cell
-            found_phrase = False
-            for row in sheet1.iter_rows():
-                for cell in row:
-                    if cell.value and "Account Statement from" in str(cell.value):
-                        found_phrase = True
-                        break
-                if found_phrase:
+            # Find the header row
+            header_row_idx = -1
+            details_col_idx = -1
+            debits_col_idx = -1
+
+            for i, row in enumerate(table_sheet.iter_rows(values_only=True), start=1):
+                if "Transaction Details" in row and "Debits" in row:
+                    header_row_idx = i
+                    # Find the column indices for the headers
+                    details_col_idx = row.index("Transaction Details")
+                    debits_col_idx = row.index("Debits")
                     break
-            assert found_phrase, "The phrase 'Account Statement from' was not found in a single cell."
 
-            # b. Verify that the number of columns is reasonable
-            assert sheet1.max_column < 35, f"Expected a reasonable number of columns (< 35), but got {sheet1.max_column}."
+            assert header_row_idx != -1, "Could not find the header row in the NAB statement."
+            assert details_col_idx != debits_col_idx, "Transaction Details and Debits are in the same column."
+
+            # Find a specific transaction and verify alignment
+            found_transaction = False
+            for row in table_sheet.iter_rows(min_row=header_row_idx + 1, values_only=True):
+                # Using a known transaction from a sample file
+                if row[details_col_idx] and "TRANSFER" in row[details_col_idx] and "VODAFONE" in row[details_col_idx]:
+                    # This is the row we want to check
+                    # The value in the "Debits" column for this row should be a number
+                    debit_value = row[debits_col_idx]
+                    assert isinstance(debit_value, (int, float)) or debit_value.replace('$', '').replace(',', '').strip().isdigit()
+                    found_transaction = True
+                    break
+
+            assert found_transaction, "Could not find the specific VODAFONE transaction to verify alignment."
 
         except Exception as e:
             pytest.fail(f"Failed to inspect the output Excel file for {pdf_path}: {e}")
