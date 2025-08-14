@@ -20,6 +20,9 @@ provider:
             - "textract:GetDocumentAnalysis"
           Resource: "*" # Textract actions are not resource-specific in the same way as S3
 
+plugins:
+  - serverless-dotenv-plugin
+
 functions:
   api:
     # Pointing to the directory containing the Dockerfile
@@ -31,3 +34,7 @@ functions:
       - httpApi:
           path: /{proxy+}
           method: any
+
+custom:
+  dotenv:
+    path: ../backend/.env
