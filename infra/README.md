@@ -15,8 +15,27 @@ The `serverless.yml` file in this directory defines all the necessary cloud reso
 - CloudWatch logging and alerts
 
 ## Deployment
-Refer to the root `docs/SETUP.md` for instructions on setting up AWS credentials. To deploy the infrastructure, run:
 
-```bash
-serverless deploy
-```
+Before deploying, you must have all your backend credentials and configurations set up in the `backend/.env` file, as described in the main `docs/SETUP.md` guide.
+
+The Serverless Framework needs these variables to be present in the same directory as the `serverless.yml` file.
+
+**Deployment Steps:**
+
+1.  **Copy the environment file:** From the project root, copy the backend environment file into this `infra/` directory.
+    ```bash
+    # On Linux/macOS
+    cp backend/.env infra/
+    # On Windows
+    copy backend\\.env infra\\.env
+    ```
+
+2.  **Navigate to the infra directory:**
+    ```bash
+    cd infra
+    ```
+
+3.  **Deploy the service:**
+    ```bash
+    serverless deploy
+    ```

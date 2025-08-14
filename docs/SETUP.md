@@ -173,3 +173,11 @@ POSTHOG_API_HOST=https://app.posthog.com
 1.  Sign up for accounts at [Sentry.io](https://sentry.io) and [PostHog](https://posthog.com).
 2.  Create a new project for each service.
 3.  In the project settings, you will find the DSN (for Sentry) and the API Key (for PostHog). Copy these values.
+
+---
+
+## 5. Running and Deploying
+
+Once all the environment variables above are configured in your local `.env` files, you are ready to run and deploy the application.
+
+For detailed instructions on how to run the frontend locally and deploy the backend to AWS, please refer to the **`infra/README.md`** file.

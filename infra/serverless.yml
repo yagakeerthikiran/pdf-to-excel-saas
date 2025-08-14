@@ -7,8 +7,17 @@ provider:
   runtime: python3.11 # This is now informational, the runtime is defined in the Docker image
   region: ${env:AWS_REGION, 'us-east-1'}
   environment:
+    # Variables are now loaded directly by Serverless Framework from the .env file
+    # in this directory.
     S3_BUCKET_NAME: ${env:S3_BUCKET_NAME}
-    # Other secrets will be added here later
+    SUPABASE_URL: ${env:SUPABASE_URL}
+    SUPABASE_SERVICE_KEY: ${env:SUPABASE_SERVICE_KEY}
+    BASE_URL: ${env:BASE_URL}
+    STRIPE_SECRET_KEY: ${env:STRIPE_SECRET_KEY}
+    STRIPE_WEBHOOK_SECRET: ${env:STRIPE_WEBHOOK_SECRET}
+    SENTRY_DSN: ${env:SENTRY_DSN}
+    POSTHOG_API_KEY: ${env:POSTHOG_API_KEY}
+    POSTHOG_API_HOST: ${env:POSTHOG_API_HOST}
   iam:
     role:
       statements:
@@ -18,10 +27,7 @@ provider:
             - "s3:GetObject"
             - "textract:StartDocumentAnalysis"
             - "textract:GetDocumentAnalysis"
-          Resource: "*" # Textract actions are not resource-specific in the same way as S3
-
-plugins:
-  - serverless-dotenv-plugin
+          Resource: "*"
 
 functions:
   api:
@@ -34,7 +40,3 @@ functions:
       - httpApi:
           path: /{proxy+}
           method: any
-
-custom:
-  dotenv:
-    path: ../backend/.env
