@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import posthog from 'posthog-js'
 
 export default function UploadCard() {
@@ -9,6 +9,22 @@ export default function UploadCard() {
   const [message, setMessage] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Safe PostHog capture function
+  const safeCapture = (event: string, properties?: any) => {
+    try {
+      if (posthog && typeof posthog.capture === 'function') {
+        posthog.capture(event, properties)
+      }
+    } catch (error) {
+      console.warn('PostHog capture failed:', error)
+    }
+  }
+
+  useEffect(() => {
+    // Track when upload button is viewed
+    safeCapture('upload_button_viewed')
+  }, [])
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
       const selectedFile = e.target.files[0]
@@ -16,7 +32,7 @@ export default function UploadCard() {
       setMessage(`Selected file: ${selectedFile.name}`)
       
       // PostHog event
-      posthog.capture('file_selected', {
+      safeCapture('file_selected', {
         file_size: selectedFile.size,
         file_type: selectedFile.type,
         file_name: selectedFile.name.split('.').pop()?.toLowerCase()
@@ -25,7 +41,7 @@ export default function UploadCard() {
   }
 
   const handleUploadClick = () => {
-    posthog.capture('upload_button_clicked')
+    safeCapture('upload_button_clicked')
     fileInputRef.current?.click()
   }
 
@@ -37,7 +53,7 @@ export default function UploadCard() {
     }
 
     setUploading(true)
-    posthog.capture('upload_started', {
+    safeCapture('upload_started', {
       file_size: file.size,
       file_type: file.type
     })
@@ -58,7 +74,7 @@ export default function UploadCard() {
       const result = await response.json()
       setMessage('File uploaded successfully!')
       
-      posthog.capture('upload_succeeded', {
+      safeCapture('upload_succeeded', {
         file_size: file.size,
         file_type: file.type
       })
@@ -66,23 +82,18 @@ export default function UploadCard() {
       console.error('Upload error:', error)
       setMessage('Upload failed. Please try again.')
       
-      posthog.capture('upload_failed', {
+      safeCapture('upload_failed', {
         error: error instanceof Error ? error.message : 'Unknown error',
-        file_size: file.size,
-        file_type: file.type
+        file_size: file?.size,
+        file_type: file?.type
       })
     } finally {
       setUploading(false)
     }
   }
 
-  // Track when upload button is viewed
-  const handleCardView = () => {
-    posthog.capture('upload_button_viewed')
-  }
-
   return (
-    <div className="w-full max-w-lg mx-auto" onLoad={handleCardView}>
+    <div className="w-full max-w-lg mx-auto">
       <div className="p-6 border-2 border-dashed border-gray-300 rounded-lg text-center hover:border-gray-400 transition-colors">
         <div className="mb-4">
           <svg className="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
