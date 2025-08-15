@@ -1,4 +1,4 @@
-import UploadCard from "@/components/UploadCard";
+import SimpleUploadCard from "@/components/SimpleUploadCard";
 
 export default function Home() {
   return (
@@ -10,7 +10,7 @@ export default function Home() {
         </p>
       </div>
       
-      <UploadCard />
+      <SimpleUploadCard />
     </main>
   );
 }
