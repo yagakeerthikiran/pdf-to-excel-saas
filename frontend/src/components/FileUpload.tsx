@@ -1,8 +1,9 @@
 'use client'
 
 import { useState, type FormEvent } from 'react'
+import type { User } from '@supabase/supabase-js'
 
-export default function FileUpload() {
+export default function FileUpload({ user }: { user: User }) {
   const [file, setFile] = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
   const [message, setMessage] = useState('')
@@ -24,25 +25,25 @@ export default function FileUpload() {
     setUploading(true)
     setMessage('Getting upload URL...')
 
-    // This requires the user to be logged in and the user ID to be passed
-    // in the header. We will assume the parent component handles auth state.
-    // For now, we need to get the user from supabase to pass the header.
-    // A better implementation would pass the user object as a prop.
-
-    // For now, let's assume the call is made correctly.
-    // The logic to get the user ID should be added here.
-
     try {
+      // 1. Get a pre-signed URL from our API
       const res = await fetch('/api/generate-upload-url', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-ID': user.id, // Pass the user ID in the header
+        },
         body: JSON.stringify({ filename: file.name, contentType: file.type }),
       })
 
-      if (!res.ok) throw new Error('Failed to get upload URL.')
+      if (!res.ok) {
+        const errorBody = await res.json();
+        throw new Error(errorBody.detail || 'Failed to get upload URL.');
+      }
 
       const { url, fields } = await res.json()
 
+      // 2. Upload the file to S3 using the pre-signed URL
       setMessage('Uploading file...')
       const formData = new FormData()
       Object.entries(fields).forEach(([key, value]) => {
@@ -56,18 +57,38 @@ export default function FileUpload() {
 
       setMessage('File uploaded successfully! Starting conversion...')
 
+      // 3. Notify our backend that the file is ready for conversion
       const convertResponse = await fetch('/api/convert', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-ID': user.id, // Pass the user ID in the header
+        },
         body: JSON.stringify({ fileKey: fields.key }),
       })
 
       if (!convertResponse.ok) throw new Error('Conversion failed.')
 
       const { download_url } = await convertResponse.json()
-      setMessage(`Conversion successful! Click here to download.`)
-      // In a real UI, you'd make this a clickable link:
-      // e.g., set a new state with the URL and render an <a> tag.
+
+      // Create a clickable link for the download
+      const link = document.createElement('a');
+      link.href = download_url;
+      link.textContent = 'Click here to download your file.';
+      link.target = '_blank';
+      link.className = 'text-blue-600 hover:underline';
+
+      // Clear the message and append the link
+      setMessage('Conversion successful! ');
+      // This is a bit of a hack for the message area, a real UI would have a dedicated results spot
+      const messageElement = document.querySelector('#message-area');
+      if(messageElement) {
+        messageElement.innerHTML = 'Conversion successful! ';
+        messageElement.appendChild(link);
+      } else {
+        setMessage(`Conversion successful! Download link: ${download_url}`);
+      }
+
 
     } catch (error) {
       console.error(error)
@@ -108,11 +129,9 @@ export default function FileUpload() {
           {uploading ? 'Uploading...' : 'Upload and Convert'}
         </button>
       </form>
-      {message && (
-        <p className={`mt-4 text-sm ${message.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
+      <div id="message-area" className={`mt-4 text-sm ${message.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
           {message}
-        </p>
-      )}
+      </div>
     </div>
   )
 }
