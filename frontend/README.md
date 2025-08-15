@@ -22,28 +22,28 @@ This is a [Next.js](https://nextjs.org) project built with TypeScript, TailwindC
 Create a `.env.local` file in the frontend directory with:
 
 ```env
-NEXT_PUBLIC_POSTHOG_KEY=phc_...
+# PostHog Analytics (optional for development)
+NEXT_PUBLIC_POSTHOG_KEY=phc_your_posthog_key_here
 NEXT_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
-NEXT_PUBLIC_SENTRY_DSN=...
+
+# Sentry Error Tracking (optional for development)
+NEXT_PUBLIC_SENTRY_DSN=your_sentry_dsn_here
 ```
 
-⚠️ **Important**: Keep all secrets in environment files only. Never commit API keys to the repository.
+**⚠️ Important Notes:**
+- **PostHog Key Format**: Must start with `phc_` to be valid
+- **Without Keys**: App works fine without these keys (analytics just won't track)
+- **Never Commit**: Keep all secrets in environment files only
 
-### Development Server
+### Quick Test (No Setup Required)
+
+The app works immediately without any environment variables:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-**Note**: If port 3000 is busy, Next.js will automatically switch to port 3001.
+Open [http://localhost:3000](http://localhost:3000) and you should see the upload button.
 
 ## Windows Development Notes
 
@@ -66,18 +66,41 @@ npm run dev
 ### Port Management
 Next.js will automatically switch to port 3001 if 3000 is busy. Check the terminal output for the actual port being used.
 
+## Troubleshooting
+
+### Upload Button Not Visible
+1. **Check Console**: Look for JavaScript errors in browser console
+2. **Verify Build**: Run `npm run build` to check for TypeScript/build errors
+3. **Clear Cache**: Use Windows cache clearing command above
+4. **Check Port**: Ensure you're on the correct port (3000 or 3001)
+
+### PostHog 401 Errors
+1. **Check Key Format**: PostHog key must start with `phc_`
+2. **Verify .env.local**: Ensure file is in `frontend/.env.local` 
+3. **Restart Server**: After adding env vars, restart `npm run dev`
+4. **Optional**: PostHog errors won't break the app functionality
+
+### Environment Variables Not Loading
+```bash
+# Verify your .env.local file location
+ls frontend/.env.local
+
+# Check file contents (without showing secrets)
+head -n 3 frontend/.env.local
+```
+
 ## Features
 
 ### File Upload
-- **Component**: `src/components/UploadCard.tsx`
+- **Component**: `src/components/SimpleUploadCard.tsx` (no analytics) or `UploadCard.tsx` (with analytics)
 - **API Route**: `src/app/api/upload/route.ts`
 - **Features**: 
   - PDF file validation
   - 20MB size limit
-  - PostHog event tracking
   - Error handling
+  - Success feedback
 
-### Analytics Integration
+### Analytics Integration (Optional)
 - **PostHog**: Initialized via `useEffect` in `src/app/providers.tsx`
 - **Events Tracked**:
   - `upload_button_viewed`
@@ -87,7 +110,7 @@ Next.js will automatically switch to port 3001 if 3000 is busy. Check the termin
   - `upload_succeeded`
   - `upload_failed`
 
-### Error Monitoring
+### Error Monitoring (Optional)
 - **Sentry**: Configured for Next.js 15 with proper instrumentation hooks
 - **Files**: 
   - `src/instrumentation.ts` (server hooks)
@@ -102,7 +125,7 @@ Next.js will automatically switch to port 3001 if 3000 is busy. Check the termin
 
 2. **Upload Button Visibility**: 
    - Visit homepage
-   - Verify upload card is visible and interactive
+   - Verify upload card with blue button appears
 
 3. **File Upload Flow**:
    - Click "Select PDF File" button
@@ -110,7 +133,7 @@ Next.js will automatically switch to port 3001 if 3000 is busy. Check the termin
    - Click "Upload PDF"
    - Verify success/error messages
 
-4. **PostHog Events**:
+4. **PostHog Events** (if configured):
    - Open browser dev tools
    - Check Network tab for PostHog requests
    - Verify no 401 errors in console
@@ -120,6 +143,17 @@ Next.js will automatically switch to port 3001 if 3000 is busy. Check the termin
    npm run build
    ```
    - Verify build completes without Sentry or analytics errors
+
+## Environment Variable Examples
+
+```env
+# Valid PostHog setup
+NEXT_PUBLIC_POSTHOG_KEY=phc_abcd1234567890abcdef1234567890abcdef1234
+NEXT_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
+
+# Valid Sentry setup  
+NEXT_PUBLIC_SENTRY_DSN=https://abc123@def456.ingest.sentry.io/789012
+```
 
 ## Build & Deploy
 
@@ -131,7 +165,7 @@ npm start
 The build process will:
 - Compile TypeScript
 - Generate optimized production bundle
-- Initialize Sentry and PostHog configurations
+- Initialize Sentry and PostHog configurations (if keys provided)
 
 ## Project Structure
 
@@ -144,7 +178,8 @@ src/
 │   ├── page.tsx             # Homepage
 │   └── providers.tsx        # Client providers (PostHog)
 ├── components/
-│   ├── UploadCard.tsx       # Main upload component
+│   ├── SimpleUploadCard.tsx # Upload component (no analytics)
+│   ├── UploadCard.tsx       # Upload component (with analytics)
 │   └── PostHogProvider.tsx  # Legacy provider (deprecated)
 ├── instrumentation.ts       # Sentry server hooks
 └── instrumentation-client.ts # Sentry client hooks
