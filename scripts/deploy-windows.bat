@@ -62,7 +62,7 @@ if not exist .env.prod (
     )
 )
 
-python scripts/validate_env.py --env production --file .env.prod
+python scripts\validate_env.py --env production --file .env.prod
 if %errorlevel% neq 0 (
     echo.
     echo Validation failed. Please fix the issues above.
@@ -88,7 +88,15 @@ if /i not "%confirm%"=="y" (
     goto menu
 )
 
-powershell -ExecutionPolicy Bypass -File scripts/deploy-infrastructure.ps1
+REM Check if PowerShell script exists
+if not exist "scripts\deploy-infrastructure.ps1" (
+    echo ERROR: PowerShell script not found at scripts\deploy-infrastructure.ps1
+    echo Please ensure you're running this from the project root directory.
+    pause
+    goto menu
+)
+
+powershell -ExecutionPolicy Bypass -File "scripts\deploy-infrastructure.ps1"
 if %errorlevel% neq 0 (
     echo.
     echo Infrastructure deployment failed.
@@ -116,7 +124,15 @@ if /i not "%confirm%"=="y" (
     goto menu
 )
 
-powershell -ExecutionPolicy Bypass -File scripts/setup-github-secrets.ps1
+REM Check if PowerShell script exists
+if not exist "scripts\setup-github-secrets.ps1" (
+    echo ERROR: PowerShell script not found at scripts\setup-github-secrets.ps1
+    echo Please ensure you're running this from the project root directory.
+    pause
+    goto menu
+)
+
+powershell -ExecutionPolicy Bypass -File "scripts\setup-github-secrets.ps1"
 if %errorlevel% neq 0 (
     echo.
     echo GitHub secrets setup failed.
@@ -149,7 +165,7 @@ if /i not "%confirm%"=="y" (
 
 REM Validate environment
 echo Step 1/4: Validating environment...
-python scripts/validate_env.py --env production --file .env.prod
+python scripts\validate_env.py --env production --file .env.prod
 if %errorlevel% neq 0 (
     echo Environment validation failed.
     pause
@@ -158,7 +174,12 @@ if %errorlevel% neq 0 (
 
 REM Deploy infrastructure
 echo Step 2/4: Deploying infrastructure...
-powershell -ExecutionPolicy Bypass -File scripts/deploy-infrastructure.ps1
+if not exist "scripts\deploy-infrastructure.ps1" (
+    echo ERROR: PowerShell script not found at scripts\deploy-infrastructure.ps1
+    pause
+    goto menu
+)
+powershell -ExecutionPolicy Bypass -File "scripts\deploy-infrastructure.ps1"
 if %errorlevel% neq 0 (
     echo Infrastructure deployment failed.
     pause
@@ -167,7 +188,12 @@ if %errorlevel% neq 0 (
 
 REM Setup GitHub secrets
 echo Step 3/4: Setting up GitHub secrets...
-powershell -ExecutionPolicy Bypass -File scripts/setup-github-secrets.ps1
+if not exist "scripts\setup-github-secrets.ps1" (
+    echo ERROR: PowerShell script not found at scripts\setup-github-secrets.ps1
+    pause
+    goto menu
+)
+powershell -ExecutionPolicy Bypass -File "scripts\setup-github-secrets.ps1"
 if %errorlevel% neq 0 (
     echo GitHub secrets setup failed.
     pause
@@ -200,6 +226,37 @@ echo.
 echo ===========================================
 echo  Checking Prerequisites
 echo ===========================================
+echo.
+
+REM Check current directory
+echo Current directory: %CD%
+echo.
+
+REM Check if scripts exist
+if exist "scripts\deploy-infrastructure.ps1" (
+    echo [OK] deploy-infrastructure.ps1 found
+) else (
+    echo [MISSING] deploy-infrastructure.ps1 - Check if you're in the project root
+)
+
+if exist "scripts\setup-github-secrets.ps1" (
+    echo [OK] setup-github-secrets.ps1 found
+) else (
+    echo [MISSING] setup-github-secrets.ps1 - Check if you're in the project root
+)
+
+if exist "scripts\validate_env.py" (
+    echo [OK] validate_env.py found
+) else (
+    echo [MISSING] validate_env.py - Check if you're in the project root
+)
+
+if exist ".env.prod.template" (
+    echo [OK] .env.prod.template found
+) else (
+    echo [MISSING] .env.prod.template - Check if you're in the project root
+)
+
 echo.
 
 REM Check Git
@@ -267,6 +324,10 @@ if %errorlevel% equ 0 (
 ) else (
     echo [MISSING] GitHub CLI not authenticated - Run 'gh auth login'
 )
+
+echo.
+echo PowerShell Execution Policy:
+powershell -Command "Get-ExecutionPolicy"
 
 echo.
 pause
