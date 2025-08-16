@@ -52,7 +52,7 @@ try {
 try {
     $terraformVersion = terraform version 2>$null
     if ($LASTEXITCODE -eq 0) {
-        Write-Status "Terraform found: $($terraformVersion.Split(' ')[1])"
+        Write-Status "Terraform found"
     } else {
         throw "Terraform not found"
     }
@@ -66,7 +66,7 @@ try {
 try {
     $dockerVersion = docker --version 2>$null
     if ($LASTEXITCODE -eq 0) {
-        Write-Status "Docker found: $($dockerVersion)"
+        Write-Status "Docker found: $dockerVersion"
     } else {
         Write-Warning "Docker not found. Docker builds will be skipped."
     }
@@ -125,31 +125,31 @@ try {
     if ($LASTEXITCODE -eq 0) {
         Write-Status "Terraform state bucket already exists"
     } else {
-        throw "Bucket does not exist"
+        Write-Host "Creating Terraform state bucket..."
+        aws s3 mb "s3://$terraformStateBucket" --region $Region
+        
+        # Enable versioning
+        aws s3api put-bucket-versioning --bucket $terraformStateBucket --versioning-configuration Status=Enabled
+        
+        # Enable encryption
+        $encryptionConfig = @{
+            Rules = @(
+                @{
+                    ApplyServerSideEncryptionByDefault = @{
+                        SSEAlgorithm = "AES256"
+                    }
+                }
+            )
+        } | ConvertTo-Json -Depth 5
+        
+        $encryptionConfig | Out-File -FilePath "temp-encryption.json" -Encoding UTF8
+        aws s3api put-bucket-encryption --bucket $terraformStateBucket --server-side-encryption-configuration file://temp-encryption.json
+        Remove-Item "temp-encryption.json"
+        
+        Write-Status "Terraform state bucket created and configured"
     }
 } catch {
-    Write-Host "Creating Terraform state bucket..."
-    aws s3 mb "s3://$terraformStateBucket" --region $Region
-    
-    # Enable versioning
-    aws s3api put-bucket-versioning --bucket $terraformStateBucket --versioning-configuration Status=Enabled
-    
-    # Enable encryption
-    $encryptionConfig = @{
-        Rules = @(
-            @{
-                ApplyServerSideEncryptionByDefault = @{
-                    SSEAlgorithm = "AES256"
-                }
-            }
-        )
-    } | ConvertTo-Json -Depth 5
-    
-    $encryptionConfig | Out-File -FilePath "temp-encryption.json" -Encoding UTF8
-    aws s3api put-bucket-encryption --bucket $terraformStateBucket --server-side-encryption-configuration file://temp-encryption.json
-    Remove-Item "temp-encryption.json"
-    
-    Write-Status "Terraform state bucket created and configured"
+    Write-Warning "Could not verify or create Terraform state bucket. Continuing anyway."
 }
 
 # Initialize and deploy infrastructure
@@ -161,12 +161,20 @@ try {
     # Initialize Terraform
     Write-Host "Initializing Terraform..."
     terraform init
-    if ($LASTEXITCODE -ne 0) { throw "Terraform init failed" }
+    if ($LASTEXITCODE -ne 0) { 
+        Write-Error "Terraform init failed"
+        Pop-Location
+        exit 1
+    }
 
     # Plan deployment
     Write-Host "Planning infrastructure deployment..."
     terraform plan -var="aws_region=$Region" -var="environment=$Environment" -var="app_name=$AppName" -out=tfplan
-    if ($LASTEXITCODE -ne 0) { throw "Terraform plan failed" }
+    if ($LASTEXITCODE -ne 0) { 
+        Write-Error "Terraform plan failed"
+        Pop-Location
+        exit 1
+    }
 
     Write-Host "`n📋 Terraform Plan Summary:" -ForegroundColor $WarningColor
     terraform show -no-color tfplan | Select-String "Plan:|will be created|will be updated|will be destroyed"
@@ -189,6 +197,11 @@ try {
                 $s3Bucket = terraform output -raw s3_bucket_name 2>$null
                 $ecrFrontend = terraform output -raw ecr_frontend_url 2>$null
                 $ecrBackend = terraform output -raw ecr_backend_url 2>$null
+                
+                if ([string]::IsNullOrEmpty($albDns)) { $albDns = "N/A" }
+                if ([string]::IsNullOrEmpty($s3Bucket)) { $s3Bucket = "N/A" }
+                if ([string]::IsNullOrEmpty($ecrFrontend)) { $ecrFrontend = "N/A" }
+                if ([string]::IsNullOrEmpty($ecrBackend)) { $ecrBackend = "N/A" }
                 
                 Write-Host "• Load Balancer DNS: $albDns"
                 Write-Host "• S3 Bucket: $s3Bucket"
@@ -218,18 +231,21 @@ APP_NAME=$AppName
             
         } else {
             Write-Error "Infrastructure deployment failed!"
+            Pop-Location
             exit 1
         }
     } else {
         Write-Warning "Deployment cancelled by user."
+        Pop-Location
         exit 0
     }
 } catch {
     Write-Error "Error during Terraform deployment: $_"
-    exit 1
-} finally {
     Pop-Location
+    exit 1
 }
+
+Pop-Location
 
 # Create ECR repositories if they don't exist
 Write-Host "`n📦 Setting up Container Repositories..." -ForegroundColor $InfoColor
@@ -240,12 +256,12 @@ try {
     if ($LASTEXITCODE -eq 0) {
         Write-Status "Frontend ECR repository already exists"
     } else {
-        throw "Repository does not exist"
+        Write-Host "Creating frontend ECR repository..."
+        aws ecr create-repository --repository-name "$AppName-frontend" --region $Region --image-scanning-configuration scanOnPush=true
+        Write-Status "Frontend ECR repository created"
     }
 } catch {
-    Write-Host "Creating frontend ECR repository..."
-    aws ecr create-repository --repository-name "$AppName-frontend" --region $Region --image-scanning-configuration scanOnPush=true
-    Write-Status "Frontend ECR repository created"
+    Write-Warning "Could not verify frontend ECR repository."
 }
 
 # Check and create backend repository
@@ -254,12 +270,12 @@ try {
     if ($LASTEXITCODE -eq 0) {
         Write-Status "Backend ECR repository already exists"
     } else {
-        throw "Repository does not exist"
+        Write-Host "Creating backend ECR repository..."
+        aws ecr create-repository --repository-name "$AppName-backend" --region $Region --image-scanning-configuration scanOnPush=true
+        Write-Status "Backend ECR repository created"
     }
 } catch {
-    Write-Host "Creating backend ECR repository..."
-    aws ecr create-repository --repository-name "$AppName-backend" --region $Region --image-scanning-configuration scanOnPush=true
-    Write-Status "Backend ECR repository created"
+    Write-Warning "Could not verify backend ECR repository."
 }
 
 # Build and push initial images (if Docker is available)
@@ -276,10 +292,14 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
         Write-Host "Building frontend image..."
         docker build -f frontend\Dockerfile.prod -t "$AppName-frontend" frontend\
         
-        # Tag and push
-        docker tag "$AppName-frontend:latest" "$accountId.dkr.ecr.$Region.amazonaws.com/$AppName-frontend:latest"
-        docker push "$accountId.dkr.ecr.$Region.amazonaws.com/$AppName-frontend:latest"
-        Write-Status "Frontend image pushed to ECR"
+        if ($LASTEXITCODE -eq 0) {
+            # Tag and push
+            docker tag "$AppName-frontend:latest" "$accountId.dkr.ecr.$Region.amazonaws.com/$AppName-frontend:latest"
+            docker push "$accountId.dkr.ecr.$Region.amazonaws.com/$AppName-frontend:latest"
+            Write-Status "Frontend image pushed to ECR"
+        } else {
+            Write-Warning "Frontend image build failed"
+        }
     } else {
         Write-Warning "Frontend Dockerfile.prod not found. Skipping frontend image build."
     }
@@ -289,10 +309,14 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
         Write-Host "Building backend image..."
         docker build -f backend\Dockerfile.prod -t "$AppName-backend" backend\
         
-        # Tag and push
-        docker tag "$AppName-backend:latest" "$accountId.dkr.ecr.$Region.amazonaws.com/$AppName-backend:latest"
-        docker push "$accountId.dkr.ecr.$Region.amazonaws.com/$AppName-backend:latest"
-        Write-Status "Backend image pushed to ECR"
+        if ($LASTEXITCODE -eq 0) {
+            # Tag and push
+            docker tag "$AppName-backend:latest" "$accountId.dkr.ecr.$Region.amazonaws.com/$AppName-backend:latest"
+            docker push "$accountId.dkr.ecr.$Region.amazonaws.com/$AppName-backend:latest"
+            Write-Status "Backend image pushed to ECR"
+        } else {
+            Write-Warning "Backend image build failed"
+        }
     } else {
         Write-Warning "Backend Dockerfile.prod not found. Skipping backend image build."
     }
@@ -328,7 +352,7 @@ Write-Host "Waiting for services to initialize..."
 Start-Sleep 30
 
 # Test ALB endpoint (if available)
-if ($albDns) {
+if ($albDns -and $albDns -ne "N/A") {
     Write-Host "Testing load balancer endpoint..."
     for ($i = 1; $i -le 5; $i++) {
         try {
@@ -353,18 +377,30 @@ Write-Host "• Environment: $Environment"
 Write-Host "• AWS Region: $Region"
 Write-Host "• AWS Account: $accountId"
 Write-Host "• Application: $AppName"
-Write-Host "• Load Balancer: $($albDns ?? 'Pending')"
-Write-Host "• S3 Bucket: $($s3Bucket ?? 'N/A')"
+if ($albDns -and $albDns -ne "N/A") {
+    Write-Host "• Load Balancer: $albDns"
+} else {
+    Write-Host "• Load Balancer: Pending"
+}
+if ($s3Bucket -and $s3Bucket -ne "N/A") {
+    Write-Host "• S3 Bucket: $s3Bucket"
+} else {
+    Write-Host "• S3 Bucket: Pending"
+}
 Write-Host "• ECR Repositories: Created"
 Write-Host "• Monitoring: Configured"
 Write-Host "• Infrastructure: ✅ Deployed"
 
 Write-Host "`n📋 Next Steps:" -ForegroundColor $InfoColor
-Write-Host "1. Configure your domain to point to: $albDns"
+if ($albDns -and $albDns -ne "N/A") {
+    Write-Host "1. Configure your domain to point to: $albDns"
+    Write-Host "5. Monitor application at: http://$albDns"
+} else {
+    Write-Host "1. Check Terraform outputs for Load Balancer DNS"
+}
 Write-Host "2. Set up SSL certificate in AWS Certificate Manager"
 Write-Host "3. Update GitHub repository secrets for CI/CD"
 Write-Host "4. Run 'git push origin main' to trigger deployment pipeline"
-Write-Host "5. Monitor application at: http://$albDns"
 
 Write-Host "`n✅ Infrastructure deployment completed successfully!" -ForegroundColor $SuccessColor
 
