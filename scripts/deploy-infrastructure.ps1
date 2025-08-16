@@ -251,74 +251,104 @@ Pop-Location
 Write-Host "`n📦 Setting up Container Repositories..." -ForegroundColor $InfoColor
 
 # Check and create frontend repository
-try {
-    aws ecr describe-repositories --repository-names "$AppName-frontend" --region $Region 2>$null | Out-Null
+Write-Host "Checking frontend ECR repository..."
+aws ecr describe-repositories --repository-names "$AppName-frontend" --region $Region 2>$null | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    Write-Status "Frontend ECR repository already exists"
+} else {
+    Write-Host "Creating frontend ECR repository..."
+    aws ecr create-repository --repository-name "$AppName-frontend" --region $Region --image-scanning-configuration scanOnPush=true
     if ($LASTEXITCODE -eq 0) {
-        Write-Status "Frontend ECR repository already exists"
-    } else {
-        Write-Host "Creating frontend ECR repository..."
-        aws ecr create-repository --repository-name "$AppName-frontend" --region $Region --image-scanning-configuration scanOnPush=true
         Write-Status "Frontend ECR repository created"
+    } else {
+        Write-Warning "Could not create frontend ECR repository"
     }
-} catch {
-    Write-Warning "Could not verify frontend ECR repository."
 }
 
 # Check and create backend repository
-try {
-    aws ecr describe-repositories --repository-names "$AppName-backend" --region $Region 2>$null | Out-Null
+Write-Host "Checking backend ECR repository..."
+aws ecr describe-repositories --repository-names "$AppName-backend" --region $Region 2>$null | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    Write-Status "Backend ECR repository already exists"
+} else {
+    Write-Host "Creating backend ECR repository..."
+    aws ecr create-repository --repository-name "$AppName-backend" --region $Region --image-scanning-configuration scanOnPush=true
     if ($LASTEXITCODE -eq 0) {
-        Write-Status "Backend ECR repository already exists"
-    } else {
-        Write-Host "Creating backend ECR repository..."
-        aws ecr create-repository --repository-name "$AppName-backend" --region $Region --image-scanning-configuration scanOnPush=true
         Write-Status "Backend ECR repository created"
+    } else {
+        Write-Warning "Could not create backend ECR repository"
     }
-} catch {
-    Write-Warning "Could not verify backend ECR repository."
 }
 
 # Build and push initial images (if Docker is available)
-if (Get-Command docker -ErrorAction SilentlyContinue) {
+$dockerAvailable = $false
+try {
+    docker --version | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        $dockerAvailable = $true
+    }
+} catch {
+    $dockerAvailable = $false
+}
+
+if ($dockerAvailable) {
     Write-Host "`n🐳 Building and Pushing Docker Images..." -ForegroundColor $InfoColor
 
     # Login to ECR
     Write-Host "Logging into ECR..."
     $ecrPassword = aws ecr get-login-password --region $Region
-    echo $ecrPassword | docker login --username AWS --password-stdin "$accountId.dkr.ecr.$Region.amazonaws.com"
-
-    # Build frontend image
-    if (Test-Path "frontend\Dockerfile.prod") {
-        Write-Host "Building frontend image..."
-        docker build -f frontend\Dockerfile.prod -t "$AppName-frontend" frontend\
+    if ($LASTEXITCODE -eq 0) {
+        echo $ecrPassword | docker login --username AWS --password-stdin "$accountId.dkr.ecr.$Region.amazonaws.com"
         
         if ($LASTEXITCODE -eq 0) {
-            # Tag and push
-            docker tag "$AppName-frontend:latest" "$accountId.dkr.ecr.$Region.amazonaws.com/$AppName-frontend:latest"
-            docker push "$accountId.dkr.ecr.$Region.amazonaws.com/$AppName-frontend:latest"
-            Write-Status "Frontend image pushed to ECR"
-        } else {
-            Write-Warning "Frontend image build failed"
-        }
-    } else {
-        Write-Warning "Frontend Dockerfile.prod not found. Skipping frontend image build."
-    }
+            Write-Status "ECR login successful"
+            
+            # Build frontend image
+            if (Test-Path "frontend\Dockerfile.prod") {
+                Write-Host "Building frontend image..."
+                docker build -f frontend\Dockerfile.prod -t "$AppName-frontend" frontend\
+                
+                if ($LASTEXITCODE -eq 0) {
+                    # Tag and push
+                    docker tag "$AppName-frontend:latest" "$accountId.dkr.ecr.$Region.amazonaws.com/$AppName-frontend:latest"
+                    docker push "$accountId.dkr.ecr.$Region.amazonaws.com/$AppName-frontend:latest"
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Status "Frontend image pushed to ECR"
+                    } else {
+                        Write-Warning "Frontend image push failed"
+                    }
+                } else {
+                    Write-Warning "Frontend image build failed"
+                }
+            } else {
+                Write-Warning "Frontend Dockerfile.prod not found. Skipping frontend image build."
+            }
 
-    # Build backend image
-    if (Test-Path "backend\Dockerfile.prod") {
-        Write-Host "Building backend image..."
-        docker build -f backend\Dockerfile.prod -t "$AppName-backend" backend\
-        
-        if ($LASTEXITCODE -eq 0) {
-            # Tag and push
-            docker tag "$AppName-backend:latest" "$accountId.dkr.ecr.$Region.amazonaws.com/$AppName-backend:latest"
-            docker push "$accountId.dkr.ecr.$Region.amazonaws.com/$AppName-backend:latest"
-            Write-Status "Backend image pushed to ECR"
+            # Build backend image
+            if (Test-Path "backend\Dockerfile.prod") {
+                Write-Host "Building backend image..."
+                docker build -f backend\Dockerfile.prod -t "$AppName-backend" backend\
+                
+                if ($LASTEXITCODE -eq 0) {
+                    # Tag and push
+                    docker tag "$AppName-backend:latest" "$accountId.dkr.ecr.$Region.amazonaws.com/$AppName-backend:latest"
+                    docker push "$accountId.dkr.ecr.$Region.amazonaws.com/$AppName-backend:latest"
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Status "Backend image pushed to ECR"
+                    } else {
+                        Write-Warning "Backend image push failed"
+                    }
+                } else {
+                    Write-Warning "Backend image build failed"
+                }
+            } else {
+                Write-Warning "Backend Dockerfile.prod not found. Skipping backend image build."
+            }
         } else {
-            Write-Warning "Backend image build failed"
+            Write-Warning "ECR login failed. Skipping image builds."
         }
     } else {
-        Write-Warning "Backend Dockerfile.prod not found. Skipping backend image build."
+        Write-Warning "Could not get ECR login password. Skipping image builds."
     }
 } else {
     Write-Warning "Docker not available. Skipping image builds. You can build images later."
@@ -335,11 +365,9 @@ $logGroups = @(
 )
 
 foreach ($logGroup in $logGroups) {
-    try {
-        aws logs create-log-group --log-group-name $logGroup --region $Region 2>$null
-    } catch {
-        # Log group might already exist
-    }
+    Write-Host "Creating log group: $logGroup"
+    aws logs create-log-group --log-group-name $logGroup --region $Region 2>$null
+    # Ignore errors as log groups might already exist
 }
 
 Write-Status "CloudWatch log groups created"
