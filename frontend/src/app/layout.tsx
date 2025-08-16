@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import PostHogProvider from "@/components/PostHogProvider";
+import { ClientProviders } from "./providers";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -17,9 +17,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <PostHogProvider>
-        <body className={inter.className}>{children}</body>
-      </PostHogProvider>
+      <body className={inter.className}>
+        <ClientProviders>{children}</ClientProviders>
+      </body>
     </html>
   );
 }

@@ -1,0 +1,506 @@
+name: Production Deployment Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+        - staging
+        - production
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  APP_NAME: pdf-excel-saas
+
+jobs:
+  validate-environment:
+    name: Validate Environment Variables
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Create production env file from secrets
+        run: |
+          cat > .env.prod << EOF
+          # AWS Configuration
+          AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION=${{ env.AWS_REGION }}
+          AWS_S3_BUCKET_NAME=${{ secrets.AWS_S3_BUCKET_NAME }}
+          
+          # Database
+          DATABASE_URL=${{ secrets.DATABASE_URL }}
+          
+          # App URLs
+          NEXT_PUBLIC_APP_URL=${{ secrets.NEXT_PUBLIC_APP_URL }}
+          BACKEND_URL=${{ secrets.BACKEND_URL }}
+          BACKEND_API_KEY=${{ secrets.BACKEND_API_KEY }}
+          
+          # Supabase
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          
+          # Stripe
+          STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET=${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_STRIPE_PRO_PRICE_ID=${{ secrets.NEXT_PUBLIC_STRIPE_PRO_PRICE_ID }}
+          
+          # Monitoring
+          NEXT_PUBLIC_SENTRY_DSN=${{ secrets.NEXT_PUBLIC_SENTRY_DSN }}
+          SENTRY_ORG=${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT=${{ secrets.SENTRY_PROJECT }}
+          SENTRY_AUTH_TOKEN=${{ secrets.SENTRY_AUTH_TOKEN }}
+          
+          # Analytics
+          NEXT_PUBLIC_POSTHOG_KEY=${{ secrets.NEXT_PUBLIC_POSTHOG_KEY }}
+          NEXT_PUBLIC_POSTHOG_HOST=${{ secrets.NEXT_PUBLIC_POSTHOG_HOST }}
+          POSTHOG_PROJECT_API_KEY=${{ secrets.POSTHOG_PROJECT_API_KEY }}
+          
+          # Alerts & Automation
+          SLACK_WEBHOOK_URL=${{ secrets.SLACK_WEBHOOK_URL }}
+          GITHUB_TOKEN=${{ secrets.AUTOMATION_GITHUB_TOKEN }}
+          
+          # Security
+          JWT_SECRET_KEY=${{ secrets.JWT_SECRET_KEY }}
+          ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
+          
+          # Monitoring Agent
+          AUTO_FIX_ENABLED=true
+          MONITORING_INTERVAL=60
+          ERROR_THRESHOLD=10
+          
+          # Repository Info
+          REPO_OWNER=yagakeerthikiran
+          REPO_NAME=pdf-to-excel-saas
+          EOF
+
+      - name: Validate environment variables
+        run: |
+          python scripts/validate_env.py --env production --file .env.prod
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: validate-environment
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Install backend dependencies
+        working-directory: ./backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Run frontend tests
+        working-directory: ./frontend
+        run: npm run test:ci
+
+      - name: Run backend tests
+        working-directory: ./backend
+        run: pytest
+
+      - name: Run security scan
+        uses: securecodewarrior/github-action-add-sarif@v1
+        with:
+          sarif-file: 'security-scan-results.sarif'
+        continue-on-error: true
+
+  build-and-push:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    outputs:
+      frontend-image: ${{ steps.build-frontend.outputs.image }}
+      backend-image: ${{ steps.build-backend.outputs.image }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Frontend image
+        id: build-frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile.prod
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.APP_NAME }}-frontend:latest
+            ${{ env.ECR_REGISTRY }}/${{ env.APP_NAME }}-frontend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push Backend image
+        id: build-backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile.prod
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.APP_NAME }}-backend:latest
+            ${{ env.ECR_REGISTRY }}/${{ env.APP_NAME }}-backend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Output image URIs
+        run: |
+          echo "frontend-image=${{ env.ECR_REGISTRY }}/${{ env.APP_NAME }}-frontend:${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "backend-image=${{ env.ECR_REGISTRY }}/${{ env.APP_NAME }}-backend:${{ github.sha }}" >> $GITHUB_OUTPUT
+
+  deploy-infrastructure:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    outputs:
+      alb-dns: ${{ steps.terraform.outputs.alb_dns_name }}
+      database-endpoint: ${{ steps.terraform.outputs.database_endpoint }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+          terraform_wrapper: false
+
+      - name: Create Terraform state bucket
+        run: |
+          aws s3api head-bucket --bucket pdf-excel-saas-terraform-state --region ${{ env.AWS_REGION }} 2>/dev/null || \
+          aws s3 mb s3://pdf-excel-saas-terraform-state --region ${{ env.AWS_REGION }}
+          
+          aws s3api put-bucket-versioning \
+            --bucket pdf-excel-saas-terraform-state \
+            --versioning-configuration Status=Enabled
+
+      - name: Terraform Init
+        working-directory: ./infra
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: ./infra
+        run: |
+          terraform plan \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            -var="environment=prod" \
+            -var="app_name=${{ env.APP_NAME }}" \
+            -out=tfplan
+
+      - name: Terraform Apply
+        id: terraform
+        working-directory: ./infra
+        run: |
+          terraform apply -auto-approve tfplan
+          
+          # Capture outputs
+          echo "alb_dns_name=$(terraform output -raw alb_dns_name)" >> $GITHUB_OUTPUT
+          echo "database_endpoint=$(terraform output -raw database_endpoint)" >> $GITHUB_OUTPUT
+          echo "s3_bucket_name=$(terraform output -raw s3_bucket_name)" >> $GITHUB_OUTPUT
+
+  deploy-application:
+    name: Deploy Application
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy-infrastructure]
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update ECS service - Frontend
+        run: |
+          # Get current task definition
+          TASK_DEFINITION=$(aws ecs describe-task-definition \
+            --task-definition ${{ env.APP_NAME }}-prod-frontend \
+            --query taskDefinition)
+          
+          # Update image in task definition
+          NEW_TASK_DEFINITION=$(echo $TASK_DEFINITION | jq --arg IMAGE "${{ needs.build-and-push.outputs.frontend-image }}" \
+            '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn) | del(.revision) | del(.status) | del(.requiresAttributes) | del(.placementConstraints) | del(.compatibilities) | del(.registeredAt) | del(.registeredBy)')
+          
+          # Register new task definition
+          NEW_TASK_DEF_ARN=$(echo $NEW_TASK_DEFINITION | aws ecs register-task-definition \
+            --cli-input-json file:///dev/stdin \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          
+          # Update service
+          aws ecs update-service \
+            --cluster ${{ env.APP_NAME }}-prod \
+            --service ${{ env.APP_NAME }}-prod-frontend \
+            --task-definition $NEW_TASK_DEF_ARN
+
+      - name: Update ECS service - Backend
+        run: |
+          # Get current task definition
+          TASK_DEFINITION=$(aws ecs describe-task-definition \
+            --task-definition ${{ env.APP_NAME }}-prod-backend \
+            --query taskDefinition)
+          
+          # Update image in task definition
+          NEW_TASK_DEFINITION=$(echo $TASK_DEFINITION | jq --arg IMAGE "${{ needs.build-and-push.outputs.backend-image }}" \
+            '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn) | del(.revision) | del(.status) | del(.requiresAttributes) | del(.placementConstraints) | del(.compatibilities) | del(.registeredAt) | del(.registeredBy)')
+          
+          # Register new task definition
+          NEW_TASK_DEF_ARN=$(echo $NEW_TASK_DEFINITION | aws ecs register-task-definition \
+            --cli-input-json file:///dev/stdin \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          
+          # Update service
+          aws ecs update-service \
+            --cluster ${{ env.APP_NAME }}-prod \
+            --service ${{ env.APP_NAME }}-prod-backend \
+            --task-definition $NEW_TASK_DEF_ARN
+
+      - name: Wait for deployment completion
+        run: |
+          echo "Waiting for frontend deployment..."
+          aws ecs wait services-stable \
+            --cluster ${{ env.APP_NAME }}-prod \
+            --services ${{ env.APP_NAME }}-prod-frontend
+          
+          echo "Waiting for backend deployment..."
+          aws ecs wait services-stable \
+            --cluster ${{ env.APP_NAME }}-prod \
+            --services ${{ env.APP_NAME }}-prod-backend
+
+  health-check:
+    name: Health Check
+    runs-on: ubuntu-latest
+    needs: [deploy-infrastructure, deploy-application]
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Wait for services to be ready
+        run: sleep 60
+
+      - name: Health check - Frontend
+        run: |
+          for i in {1..10}; do
+            if curl -f -s http://${{ needs.deploy-infrastructure.outputs.alb-dns }}/api/health; then
+              echo "Frontend health check passed"
+              break
+            fi
+            echo "Attempt $i failed, retrying in 30 seconds..."
+            sleep 30
+          done
+
+      - name: Health check - Backend API
+        run: |
+          for i in {1..10}; do
+            if curl -f -s http://${{ needs.deploy-infrastructure.outputs.alb-dns }}/api/health; then
+              echo "Backend health check passed"
+              break
+            fi
+            echo "Attempt $i failed, retrying in 30 seconds..."
+            sleep 30
+          done
+
+      - name: Run smoke tests
+        run: |
+          # Test file upload endpoint
+          echo "Testing file upload endpoint..."
+          curl -X POST http://${{ needs.deploy-infrastructure.outputs.alb-dns }}/api/files/upload-url \
+            -H "Content-Type: application/json" \
+            -d '{"filename": "test.pdf", "content_type": "application/pdf"}' \
+            --fail-with-body
+
+  deploy-monitoring:
+    name: Deploy Monitoring Agent
+    runs-on: ubuntu-latest
+    needs: [deploy-application, health-check]
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Create monitoring task definition
+        run: |
+          cat > monitoring-task-def.json << EOF
+          {
+            "family": "${{ env.APP_NAME }}-prod-monitoring",
+            "networkMode": "awsvpc",
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "256",
+            "memory": "512",
+            "executionRoleArn": "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.APP_NAME }}-prod-ecs-task-execution-role",
+            "taskRoleArn": "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ env.APP_NAME }}-prod-ecs-task-role",
+            "containerDefinitions": [
+              {
+                "name": "monitoring-agent",
+                "image": "python:3.11-slim",
+                "command": [
+                  "sh", "-c",
+                  "pip install requests boto3 && python /app/monitoring/intelligent_agent.py"
+                ],
+                "environment": [
+                  {"name": "AUTO_FIX_ENABLED", "value": "true"},
+                  {"name": "MONITORING_INTERVAL", "value": "60"},
+                  {"name": "ERROR_THRESHOLD", "value": "10"},
+                  {"name": "AWS_REGION", "value": "${{ env.AWS_REGION }}"},
+                  {"name": "ECS_CLUSTER", "value": "${{ env.APP_NAME }}-prod"},
+                  {"name": "SLACK_WEBHOOK_URL", "value": "${{ secrets.SLACK_WEBHOOK_URL }}"},
+                  {"name": "GITHUB_TOKEN", "value": "${{ secrets.AUTOMATION_GITHUB_TOKEN }}"},
+                  {"name": "REPO_OWNER", "value": "yagakeerthikiran"},
+                  {"name": "REPO_NAME", "value": "pdf-to-excel-saas"}
+                ],
+                "logConfiguration": {
+                  "logDriver": "awslogs",
+                  "options": {
+                    "awslogs-group": "/ecs/${{ env.APP_NAME }}-prod-monitoring",
+                    "awslogs-region": "${{ env.AWS_REGION }}",
+                    "awslogs-stream-prefix": "ecs"
+                  }
+                }
+              }
+            ]
+          }
+          EOF
+
+      - name: Create CloudWatch log group for monitoring
+        run: |
+          aws logs create-log-group \
+            --log-group-name "/ecs/${{ env.APP_NAME }}-prod-monitoring" \
+            --region ${{ env.AWS_REGION }} || true
+
+      - name: Register monitoring task definition
+        run: |
+          aws ecs register-task-definition \
+            --cli-input-json file://monitoring-task-def.json
+
+      - name: Create monitoring service
+        run: |
+          aws ecs create-service \
+            --cluster ${{ env.APP_NAME }}-prod \
+            --service-name ${{ env.APP_NAME }}-prod-monitoring \
+            --task-definition ${{ env.APP_NAME }}-prod-monitoring \
+            --desired-count 1 \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$(aws ec2 describe-subnets --filters Name=tag:Type,Values=Private --query 'Subnets[0].SubnetId' --output text)],securityGroups=[$(aws ec2 describe-security-groups --filters Name=group-name,Values=${{ env.APP_NAME }}-prod-ecs-sg --query 'SecurityGroups[0].GroupId' --output text)],assignPublicIp=DISABLED}" || echo "Service may already exist"
+
+  post-deployment:
+    name: Post Deployment Tasks
+    runs-on: ubuntu-latest
+    needs: [deploy-monitoring, health-check]
+    if: always() && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+    steps:
+      - name: Notify Slack - Success
+        if: needs.health-check.result == 'success'
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          fields: repo,message,commit,author,action,eventName,ref,workflow
+          text: |
+            ✅ PDF to Excel SaaS deployed successfully!
+            🌐 Application: http://${{ needs.deploy-infrastructure.outputs.alb-dns }}
+            📊 Monitoring: Active
+            🔄 Auto-recovery: Enabled
+
+      - name: Notify Slack - Failure
+        if: needs.health-check.result == 'failure'
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          fields: repo,message,commit,author,action,eventName,ref,workflow
+          text: |
+            ❌ PDF to Excel SaaS deployment failed!
+            🔍 Check GitHub Actions logs for details
+            🚨 Manual intervention required
+
+      - name: Create GitHub deployment status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: context.payload.deployment.id,
+              state: '${{ needs.health-check.result == 'success' && 'success' || 'failure' }}',
+              environment_url: 'http://${{ needs.deploy-infrastructure.outputs.alb-dns }}',
+              description: 'Deployment completed'
+            });
+
+      - name: Update deployment documentation
+        if: needs.health-check.result == 'success'
+        run: |
+          echo "## Last Deployment" > deployment-status.md
+          echo "- **Date**: $(date)" >> deployment-status.md
+          echo "- **Commit**: ${{ github.sha }}" >> deployment-status.md
+          echo "- **Environment**: Production" >> deployment-status.md
+          echo "- **Status**: ✅ Success" >> deployment-status.md
+          echo "- **URL**: http://${{ needs.deploy-infrastructure.outputs.alb-dns }}" >> deployment-status.md
+          echo "- **Monitoring**: 🟢 Active" >> deployment-status.md

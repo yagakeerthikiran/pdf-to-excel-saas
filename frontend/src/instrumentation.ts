@@ -1,4 +1,7 @@
-import * as Sentry from "@sentry/nextjs";
+// Server hooks for Next.js 15 Sentry integration
+import * as Sentry from '@sentry/nextjs'
+
+export const onRequestError = Sentry.captureRequestError
 
 export function register() {
   // This `register` function is called once on the server when the application starts.
