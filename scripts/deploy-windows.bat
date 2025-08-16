@@ -1,6 +1,6 @@
 @echo off
 REM PDF to Excel SaaS - Windows Quick Deployment
-REM This batch file provides a simple interface for Windows users
+REM This batch file works from any directory and finds the project root
 
 echo.
 echo ========================================
@@ -8,11 +8,44 @@ echo  PDF to Excel SaaS - Quick Deployment
 echo ========================================
 echo.
 
+REM Get the directory where this batch file is located
+set SCRIPT_DIR=%~dp0
+set PROJECT_ROOT=%SCRIPT_DIR%..
+
+REM Change to project root directory
+pushd "%PROJECT_ROOT%"
+
+echo Current directory: %CD%
+echo Script directory: %SCRIPT_DIR%
+echo Project root: %PROJECT_ROOT%
+echo.
+
+REM Check if we're in the right directory by looking for key files
+if not exist "README.md" (
+    echo ERROR: Cannot find README.md - not in project root directory
+    echo Please ensure the script is in the correct location
+    popd
+    pause
+    exit /b 1
+)
+
+if not exist "scripts\deploy-infrastructure.ps1" (
+    echo ERROR: Cannot find scripts\deploy-infrastructure.ps1
+    echo Please ensure all files are present in the repository
+    popd
+    pause
+    exit /b 1
+)
+
+echo ✅ Found project files - ready to proceed
+echo.
+
 REM Check if PowerShell is available
 powershell -Command "Write-Host 'PowerShell is available'" >nul 2>&1
 if %errorlevel% neq 0 (
     echo ERROR: PowerShell is required but not found.
     echo Please install PowerShell or use Windows 10/11.
+    popd
     pause
     exit /b 1
 )
@@ -52,7 +85,7 @@ if not exist .env.prod (
         echo.
         echo Please edit .env.prod with your actual values and run this again.
         echo Opening .env.prod in notepad...
-        notepad .env.prod
+        start notepad .env.prod
         pause
         goto menu
     ) else (
@@ -62,15 +95,19 @@ if not exist .env.prod (
     )
 )
 
-python scripts\validate_env.py --env production --file .env.prod
-if %errorlevel% neq 0 (
+if exist scripts\validate_env.py (
+    python scripts\validate_env.py --env production --file .env.prod
+    if %errorlevel% neq 0 (
+        echo.
+        echo Validation failed. Please fix the issues above.
+        pause
+        goto menu
+    )
     echo.
-    echo Validation failed. Please fix the issues above.
-    pause
-    goto menu
+    echo Environment validation passed!
+) else (
+    echo ERROR: Validation script not found at scripts\validate_env.py
 )
-echo.
-echo Environment validation passed!
 pause
 goto menu
 
@@ -88,23 +125,19 @@ if /i not "%confirm%"=="y" (
     goto menu
 )
 
-REM Check if PowerShell script exists
-if not exist "scripts\deploy-infrastructure.ps1" (
-    echo ERROR: PowerShell script not found at scripts\deploy-infrastructure.ps1
-    echo Please ensure you're running this from the project root directory.
-    pause
-    goto menu
-)
-
-powershell -ExecutionPolicy Bypass -File "scripts\deploy-infrastructure.ps1"
-if %errorlevel% neq 0 (
+if exist scripts\deploy-infrastructure.ps1 (
+    powershell -ExecutionPolicy Bypass -File scripts\deploy-infrastructure.ps1
+    if %errorlevel% neq 0 (
+        echo.
+        echo Infrastructure deployment failed.
+        pause
+        goto menu
+    )
     echo.
-    echo Infrastructure deployment failed.
-    pause
-    goto menu
+    echo Infrastructure deployment completed!
+) else (
+    echo ERROR: PowerShell script not found at scripts\deploy-infrastructure.ps1
 )
-echo.
-echo Infrastructure deployment completed!
 pause
 goto menu
 
@@ -124,23 +157,19 @@ if /i not "%confirm%"=="y" (
     goto menu
 )
 
-REM Check if PowerShell script exists
-if not exist "scripts\setup-github-secrets.ps1" (
-    echo ERROR: PowerShell script not found at scripts\setup-github-secrets.ps1
-    echo Please ensure you're running this from the project root directory.
-    pause
-    goto menu
-)
-
-powershell -ExecutionPolicy Bypass -File "scripts\setup-github-secrets.ps1"
-if %errorlevel% neq 0 (
+if exist scripts\setup-github-secrets.ps1 (
+    powershell -ExecutionPolicy Bypass -File scripts\setup-github-secrets.ps1
+    if %errorlevel% neq 0 (
+        echo.
+        echo GitHub secrets setup failed.
+        pause
+        goto menu
+    )
     echo.
-    echo GitHub secrets setup failed.
-    pause
-    goto menu
+    echo GitHub secrets setup completed!
+) else (
+    echo ERROR: PowerShell script not found at scripts\setup-github-secrets.ps1
 )
-echo.
-echo GitHub secrets setup completed!
 pause
 goto menu
 
@@ -165,37 +194,45 @@ if /i not "%confirm%"=="y" (
 
 REM Validate environment
 echo Step 1/4: Validating environment...
-python scripts\validate_env.py --env production --file .env.prod
-if %errorlevel% neq 0 (
-    echo Environment validation failed.
+if exist scripts\validate_env.py (
+    python scripts\validate_env.py --env production --file .env.prod
+    if %errorlevel% neq 0 (
+        echo Environment validation failed.
+        pause
+        goto menu
+    )
+) else (
+    echo ERROR: Validation script not found
     pause
     goto menu
 )
 
 REM Deploy infrastructure
 echo Step 2/4: Deploying infrastructure...
-if not exist "scripts\deploy-infrastructure.ps1" (
-    echo ERROR: PowerShell script not found at scripts\deploy-infrastructure.ps1
-    pause
-    goto menu
-)
-powershell -ExecutionPolicy Bypass -File "scripts\deploy-infrastructure.ps1"
-if %errorlevel% neq 0 (
-    echo Infrastructure deployment failed.
+if exist scripts\deploy-infrastructure.ps1 (
+    powershell -ExecutionPolicy Bypass -File scripts\deploy-infrastructure.ps1
+    if %errorlevel% neq 0 (
+        echo Infrastructure deployment failed.
+        pause
+        goto menu
+    )
+) else (
+    echo ERROR: Infrastructure script not found
     pause
     goto menu
 )
 
 REM Setup GitHub secrets
 echo Step 3/4: Setting up GitHub secrets...
-if not exist "scripts\setup-github-secrets.ps1" (
-    echo ERROR: PowerShell script not found at scripts\setup-github-secrets.ps1
-    pause
-    goto menu
-)
-powershell -ExecutionPolicy Bypass -File "scripts\setup-github-secrets.ps1"
-if %errorlevel% neq 0 (
-    echo GitHub secrets setup failed.
+if exist scripts\setup-github-secrets.ps1 (
+    powershell -ExecutionPolicy Bypass -File scripts\setup-github-secrets.ps1
+    if %errorlevel% neq 0 (
+        echo GitHub secrets setup failed.
+        pause
+        goto menu
+    )
+) else (
+    echo ERROR: GitHub secrets script not found
     pause
     goto menu
 )
@@ -228,36 +265,49 @@ echo  Checking Prerequisites
 echo ===========================================
 echo.
 
-REM Check current directory
+REM Check current directory and files
 echo Current directory: %CD%
 echo.
 
-REM Check if scripts exist
-if exist "scripts\deploy-infrastructure.ps1" (
+echo === Project Files ===
+if exist README.md (
+    echo [OK] README.md found - in project root
+) else (
+    echo [ERROR] README.md not found - not in project root
+)
+
+if exist scripts\deploy-infrastructure.ps1 (
     echo [OK] deploy-infrastructure.ps1 found
 ) else (
-    echo [MISSING] deploy-infrastructure.ps1 - Check if you're in the project root
+    echo [MISSING] deploy-infrastructure.ps1
 )
 
-if exist "scripts\setup-github-secrets.ps1" (
+if exist scripts\setup-github-secrets.ps1 (
     echo [OK] setup-github-secrets.ps1 found
 ) else (
-    echo [MISSING] setup-github-secrets.ps1 - Check if you're in the project root
+    echo [MISSING] setup-github-secrets.ps1
 )
 
-if exist "scripts\validate_env.py" (
+if exist scripts\validate_env.py (
     echo [OK] validate_env.py found
 ) else (
-    echo [MISSING] validate_env.py - Check if you're in the project root
+    echo [MISSING] validate_env.py
 )
 
-if exist ".env.prod.template" (
+if exist .env.prod.template (
     echo [OK] .env.prod.template found
 ) else (
-    echo [MISSING] .env.prod.template - Check if you're in the project root
+    echo [MISSING] .env.prod.template
+)
+
+if exist .env.prod (
+    echo [OK] .env.prod found
+) else (
+    echo [INFO] .env.prod not found (will be created from template)
 )
 
 echo.
+echo === Required Software ===
 
 REM Check Git
 git --version >nul 2>&1
@@ -308,7 +358,7 @@ if %errorlevel% equ 0 (
 )
 
 echo.
-echo AWS CLI Authentication Status:
+echo === Authentication Status ===
 aws sts get-caller-identity >nul 2>&1
 if %errorlevel% equ 0 (
     echo [OK] AWS CLI is configured
@@ -316,8 +366,6 @@ if %errorlevel% equ 0 (
     echo [MISSING] AWS CLI not configured - Run 'aws configure'
 )
 
-echo.
-echo GitHub CLI Authentication Status:
 gh auth status >nul 2>&1
 if %errorlevel% equ 0 (
     echo [OK] GitHub CLI is authenticated
@@ -326,14 +374,16 @@ if %errorlevel% equ 0 (
 )
 
 echo.
-echo PowerShell Execution Policy:
-powershell -Command "Get-ExecutionPolicy"
+echo === PowerShell Status ===
+powershell -Command "Write-Host 'PowerShell Version:' $PSVersionTable.PSVersion.ToString()" 2>nul
+powershell -Command "Write-Host 'Execution Policy:' (Get-ExecutionPolicy)" 2>nul
 
 echo.
 pause
 goto menu
 
 :exit
+popd
 echo.
 echo Thank you for using PDF to Excel SaaS deployment!
 echo.
