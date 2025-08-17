@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Manual Infrastructure Deployment Script
-This script manually deploys AWS infrastructure without PowerShell dependencies
+Clean Infrastructure Deployment Script
+This script deploys AWS infrastructure and guides you through required configuration
 """
 
 import os
@@ -13,6 +13,8 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
+import secrets
+import string
 
 class Colors:
     RED = '\033[91m'
@@ -35,10 +37,15 @@ def print_error(message):
 def print_info(message):
     print(f"{Colors.CYAN}ℹ️  {message}{Colors.END}")
 
+def generate_secure_key(length=32):
+    """Generate a secure random key"""
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
+
 def send_email_notification(subject, body, to_email="yagakeerthikiran@gmail.com"):
-    """Send email notification instead of Slack"""
+    """Send email notification"""
     try:
-        # Load SMTP settings from environment
+        # Load SMTP settings from environment or use defaults
         smtp_host = os.getenv('SMTP_HOST', 'smtp.gmail.com')
         smtp_port = int(os.getenv('SMTP_PORT', '587'))
         smtp_user = os.getenv('SMTP_USER', 'yagakeerthikiran@gmail.com')
@@ -46,6 +53,7 @@ def send_email_notification(subject, body, to_email="yagakeerthikiran@gmail.com"
         
         if not smtp_pass:
             print_warning("SMTP_PASS not configured - skipping email notification")
+            print_info("To enable email notifications, set SMTP_PASS in your environment")
             return
         
         msg = MIMEMultipart()
@@ -125,35 +133,163 @@ def check_prerequisites():
         print_error("AWS credentials not configured. Run 'aws configure'")
         return False
 
-def validate_environment():
-    """Validate environment configuration"""
-    print_info("Validating environment configuration...")
+def check_pre_deployment_config():
+    """Check if required service account configuration is present"""
+    print_info("Checking pre-deployment configuration...")
     
     if not os.path.exists('.env.prod'):
-        if os.path.exists('.env.prod.template'):
-            print_warning(".env.prod not found, creating from template...")
-            with open('.env.prod.template', 'r') as template:
-                content = template.read()
-            with open('.env.prod', 'w') as env_file:
-                env_file.write(content)
-            print_warning("Please edit .env.prod with your actual values")
-            input("Press Enter when you've updated .env.prod...")
-        else:
-            print_error(".env.prod.template not found")
-            return False
+        print_error(".env.prod file not found")
+        print_info("Please follow these steps:")
+        print_info("1. Copy .env.prod.template to .env.prod")
+        print_info("2. Set up service accounts (see SERVICE-SETUP-GUIDE.md)")
+        print_info("3. Fill in the required values before running this script")
+        return False
     
-    # Run Python validation if available
-    if os.path.exists('scripts/validate_env.py'):
-        success, stdout, stderr = run_command('python scripts/validate_env.py --env production --file .env.prod')
-        if success:
-            print_status("Environment validation passed")
-            return True
-        else:
-            print_error("Environment validation failed")
-            return False
-    else:
-        print_warning("Environment validation script not found - skipping")
-        return True
+    # Check if key service accounts are configured
+    required_before_deployment = [
+        'STRIPE_SECRET_KEY',
+        'SUPABASE_URL',
+        'SUPABASE_SERVICE_ROLE_KEY',
+        'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+        'NEXT_PUBLIC_SENTRY_DSN',
+        'SENTRY_ORG',
+        'SENTRY_PROJECT',
+        'NEXT_PUBLIC_POSTHOG_KEY'
+    ]
+    
+    env_vars = {}
+    with open('.env.prod', 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                env_vars[key.strip()] = value.strip()
+    
+    missing_config = []
+    placeholder_config = []
+    
+    for var in required_before_deployment:
+        if var not in env_vars or not env_vars[var]:
+            missing_config.append(var)
+        elif any(placeholder in env_vars[var].lower() for placeholder in ['your_', 'placeholder', 'example', '****']):
+            placeholder_config.append(var)
+    
+    if missing_config or placeholder_config:
+        print_error("Pre-deployment configuration incomplete")
+        
+        if missing_config:
+            print_error("Missing required variables:")
+            for var in missing_config:
+                print(f"  - {var}")
+        
+        if placeholder_config:
+            print_error("Variables with placeholder values:")
+            for var in placeholder_config:
+                print(f"  - {var}: {env_vars[var]}")
+        
+        print_info("\nPlease complete these steps before running infrastructure deployment:")
+        print_info("1. Follow SERVICE-SETUP-GUIDE.md to create service accounts")
+        print_info("2. Update .env.prod with real values (not placeholders)")
+        print_info("3. Run this script again")
+        return False
+    
+    print_status("Pre-deployment configuration looks good")
+    return True
+
+def update_env_with_infrastructure_outputs(outputs):
+    """Update .env.prod with infrastructure-generated values"""
+    print_info("Updating .env.prod with infrastructure outputs...")
+    
+    # Read current .env.prod
+    env_vars = {}
+    with open('.env.prod', 'r') as f:
+        lines = f.readlines()
+    
+    # Parse existing variables
+    for line in lines:
+        if '=' in line and not line.strip().startswith('#'):
+            key, value = line.split('=', 1)
+            env_vars[key.strip()] = value.strip()
+    
+    # Update with infrastructure outputs
+    updates = {}
+    
+    if 'database_url' in outputs:
+        updates['DATABASE_URL'] = outputs['database_url']['value']
+    
+    if 's3_bucket_name' in outputs:
+        updates['AWS_S3_BUCKET_NAME'] = outputs['s3_bucket_name']['value']
+    
+    if 'alb_dns_name' in outputs:
+        alb_dns = outputs['alb_dns_name']['value']
+        # These will be updated after domain is configured
+        if not env_vars.get('NEXT_PUBLIC_APP_URL') or 'placeholder' in env_vars.get('NEXT_PUBLIC_APP_URL', ''):
+            updates['NEXT_PUBLIC_APP_URL'] = f"https://{alb_dns}"
+        if not env_vars.get('BACKEND_URL') or 'placeholder' in env_vars.get('BACKEND_URL', ''):
+            updates['BACKEND_URL'] = f"https://{alb_dns}"
+    
+    # Generate secure keys if they don't exist or are placeholders
+    if not env_vars.get('JWT_SECRET_KEY') or 'your_' in env_vars.get('JWT_SECRET_KEY', ''):
+        updates['JWT_SECRET_KEY'] = generate_secure_key(64)
+    
+    if not env_vars.get('ENCRYPTION_KEY') or 'your_' in env_vars.get('ENCRYPTION_KEY', ''):
+        updates['ENCRYPTION_KEY'] = generate_secure_key(32)
+    
+    if not env_vars.get('BACKEND_API_KEY') or 'your_' in env_vars.get('BACKEND_API_KEY', ''):
+        updates['BACKEND_API_KEY'] = generate_secure_key(32)
+    
+    # Apply updates
+    for key, value in updates.items():
+        env_vars[key] = value
+    
+    # Write updated .env.prod
+    with open('.env.prod', 'w') as f:
+        f.write("# Production Environment Configuration\n")
+        f.write("# Auto-updated by deployment script\n")
+        f.write(f"# Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        
+        # Group variables by category
+        categories = {
+            'AWS Configuration': ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION', 'AWS_S3_BUCKET_NAME'],
+            'Database': ['DATABASE_URL'],
+            'Application URLs': ['NEXT_PUBLIC_APP_URL', 'BACKEND_URL', 'BACKEND_API_KEY'],
+            'Supabase Authentication': ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY'],
+            'Stripe Payments': ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY', 'NEXT_PUBLIC_STRIPE_PRO_PRICE_ID'],
+            'Sentry Error Tracking': ['NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_ORG', 'SENTRY_PROJECT', 'SENTRY_AUTH_TOKEN'],
+            'PostHog Analytics': ['NEXT_PUBLIC_POSTHOG_KEY', 'NEXT_PUBLIC_POSTHOG_HOST', 'POSTHOG_PROJECT_API_KEY', 'POSTHOG_HOST'],
+            'Email Notifications': ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'NOTIFICATION_EMAIL'],
+            'Security': ['JWT_SECRET_KEY', 'ENCRYPTION_KEY'],
+            'GitHub Integration': ['GITHUB_TOKEN', 'REPO_OWNER', 'REPO_NAME'],
+            'Monitoring': ['AUTO_FIX_ENABLED', 'MONITORING_INTERVAL', 'ERROR_THRESHOLD']
+        }
+        
+        for category, vars_in_category in categories.items():
+            f.write(f"# === {category} ===\n")
+            for var in vars_in_category:
+                if var in env_vars:
+                    f.write(f"{var}={env_vars[var]}\n")
+            f.write("\n")
+        
+        # Add any remaining variables
+        written_vars = set()
+        for vars_in_category in categories.values():
+            written_vars.update(vars_in_category)
+        
+        remaining_vars = set(env_vars.keys()) - written_vars
+        if remaining_vars:
+            f.write("# === Other Variables ===\n")
+            for var in sorted(remaining_vars):
+                f.write(f"{var}={env_vars[var]}\n")
+    
+    if updates:
+        print_status("Updated .env.prod with infrastructure outputs:")
+        for key, value in updates.items():
+            if 'SECRET' in key or 'KEY' in key or 'PASS' in key:
+                print(f"  • {key}: [SECURE VALUE GENERATED]")
+            else:
+                print(f"  • {key}: {value}")
+    
+    return True
 
 def create_terraform_state_bucket():
     """Create S3 bucket for Terraform state"""
@@ -190,14 +326,14 @@ def deploy_infrastructure():
     # Change to infra directory
     if not os.path.exists('infra'):
         print_error("infra directory not found")
-        return False
+        return False, None
     
     # Initialize Terraform
     print_info("Initializing Terraform...")
     success, stdout, stderr = run_command('terraform init', cwd='infra')
     if not success:
         print_error("Terraform init failed")
-        return False
+        return False, None
     
     # Plan deployment
     print_info("Planning infrastructure deployment...")
@@ -207,7 +343,7 @@ def deploy_infrastructure():
     )
     if not success:
         print_error("Terraform plan failed")
-        return False
+        return False, None
     
     # Show plan summary
     print_info("Terraform plan created successfully")
@@ -216,14 +352,14 @@ def deploy_infrastructure():
     confirm = input("\n⚠️  This will create AWS resources that may incur costs. Continue? (y/N): ")
     if confirm.lower() != 'y':
         print_warning("Deployment cancelled by user")
-        return False
+        return False, None
     
     # Apply deployment
     print_info("Applying Terraform configuration...")
     success, stdout, stderr = run_command('terraform apply tfplan', cwd='infra')
     if not success:
         print_error("Terraform apply failed")
-        return False
+        return False, None
     
     print_status("Infrastructure deployment completed!")
     
@@ -243,10 +379,13 @@ def deploy_infrastructure():
             
             print_status("Infrastructure outputs saved to infrastructure-outputs.json")
             
+            return True, outputs
+            
         except json.JSONDecodeError:
             print_warning("Could not parse Terraform outputs")
+            return True, None
     
-    return True
+    return True, None
 
 def setup_ecr_repositories():
     """Create ECR repositories"""
@@ -269,13 +408,12 @@ def setup_ecr_repositories():
                 print_warning(f"Failed to create {repo} repository")
 
 def setup_monitoring():
-    """Set up CloudWatch logging and monitoring"""
-    print_info("Setting up monitoring and alerts...")
+    """Set up CloudWatch logging"""
+    print_info("Setting up monitoring and logging...")
     
     log_groups = [
         '/ecs/pdf-excel-saas-prod-frontend',
-        '/ecs/pdf-excel-saas-prod-backend',
-        '/ecs/pdf-excel-saas-prod-monitoring'
+        '/ecs/pdf-excel-saas-prod-backend'
     ]
     
     for log_group in log_groups:
@@ -284,7 +422,7 @@ def setup_monitoring():
     
     print_status("CloudWatch log groups created")
 
-def create_deployment_checklist():
+def create_deployment_checklist(alb_dns=None):
     """Create post-deployment checklist"""
     checklist = f"""# Post-Deployment Checklist
 
@@ -299,28 +437,35 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 - [x] ECR repositories
 - [x] CloudWatch logging
 
-## Next Steps
-- [ ] Configure domain DNS (use ALB DNS from outputs)
+## Next Steps (Required)
+- [ ] Configure domain DNS pointing to: {alb_dns if alb_dns else 'Check infrastructure-outputs.json'}
 - [ ] Set up SSL certificate in AWS Certificate Manager
+- [ ] Update NEXT_PUBLIC_APP_URL and BACKEND_URL with your domain
 - [ ] Configure GitHub repository secrets
 - [ ] Deploy application via GitHub Actions
-- [ ] Set up email notifications (SMTP_PASS in environment)
-- [ ] Test complete user flow
-- [ ] Configure backup policies
-- [ ] Run security audit
+
+## Email Notifications (Optional)
+- [ ] Set up Gmail App Password or AWS SES
+- [ ] Set SMTP_PASS in environment variables
+- [ ] Test email notifications
+
+## Testing Required
+- [ ] Test complete user flow: signup → upload → convert → download
+- [ ] Test Stripe payment integration
+- [ ] Verify Supabase authentication
+- [ ] Check Sentry error reporting
+- [ ] Confirm PostHog analytics tracking
 
 ## Important Information
 - **Infrastructure Outputs**: Check infrastructure-outputs.json
 - **AWS Console**: https://console.aws.amazon.com/
 - **GitHub Repository**: https://github.com/yagakeerthikiran/pdf-to-excel-saas
-- **Email Notifications**: yagakeerthikiran@gmail.com
+- **Load Balancer DNS**: {alb_dns if alb_dns else 'See outputs file'}
 
-## Service Accounts Needed
-- [ ] Stripe (payments) - See SERVICE-SETUP-GUIDE.md
-- [ ] Supabase (auth) - See SERVICE-SETUP-GUIDE.md  
-- [ ] Sentry (errors) - See SERVICE-SETUP-GUIDE.md
-- [ ] PostHog (analytics) - See SERVICE-SETUP-GUIDE.md
-- [ ] Domain registration
+## Cost Management
+- **Expected monthly cost**: $150-250
+- **Set up billing alerts**: AWS Console → Billing → Budgets
+- **Monitor usage**: CloudWatch metrics
 """
     
     with open('deployment-checklist.md', 'w') as f:
@@ -331,8 +476,8 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 def main():
     """Main deployment function"""
     print(f"{Colors.BOLD}{Colors.BLUE}")
-    print("🚀 PDF to Excel SaaS - Manual Infrastructure Deployment")
-    print("=====================================================")
+    print("🚀 PDF to Excel SaaS - Infrastructure Deployment")
+    print("================================================")
     print(f"{Colors.END}")
     
     start_time = datetime.now()
@@ -342,9 +487,9 @@ def main():
         send_email_notification("Deployment Failed", "Prerequisites check failed")
         sys.exit(1)
     
-    # Validate environment
-    if not validate_environment():
-        send_email_notification("Deployment Failed", "Environment validation failed")
+    # Check pre-deployment configuration
+    if not check_pre_deployment_config():
+        send_email_notification("Deployment Failed", "Pre-deployment configuration incomplete")
         sys.exit(1)
     
     # Create Terraform state bucket
@@ -353,9 +498,14 @@ def main():
         sys.exit(1)
     
     # Deploy infrastructure
-    if not deploy_infrastructure():
+    success, outputs = deploy_infrastructure()
+    if not success:
         send_email_notification("Deployment Failed", "Infrastructure deployment failed")
         sys.exit(1)
+    
+    # Update environment with infrastructure outputs
+    if outputs:
+        update_env_with_infrastructure_outputs(outputs)
     
     # Setup ECR repositories
     setup_ecr_repositories()
@@ -363,8 +513,13 @@ def main():
     # Setup monitoring
     setup_monitoring()
     
+    # Get ALB DNS for checklist
+    alb_dns = None
+    if outputs and 'alb_dns_name' in outputs:
+        alb_dns = outputs['alb_dns_name']['value']
+    
     # Create checklist
-    create_deployment_checklist()
+    create_deployment_checklist(alb_dns)
     
     # Calculate deployment time
     end_time = datetime.now()
@@ -377,7 +532,12 @@ def main():
     print(f"• Duration: {duration}")
     print(f"• Region: us-east-1")
     print(f"• Environment: prod")
-    print(f"• Next Steps: See deployment-checklist.md")
+    
+    if alb_dns:
+        print(f"• Load Balancer: {alb_dns}")
+        print(f"\n{Colors.CYAN}🌐 Next: Configure your domain to point to {alb_dns}{Colors.END}")
+    
+    print(f"{Colors.CYAN}📋 See: deployment-checklist.md for next steps{Colors.END}")
     
     # Send success notification
     success_message = f"""Infrastructure deployment completed successfully!
@@ -386,21 +546,23 @@ Duration: {duration}
 Region: us-east-1
 Environment: prod
 
-Next Steps:
-1. Check infrastructure-outputs.json for ALB DNS
-2. Configure domain DNS to point to ALB
-3. Set up service accounts (see SERVICE-SETUP-GUIDE.md)
-4. Configure GitHub secrets
-5. Deploy application
+Load Balancer DNS: {alb_dns if alb_dns else 'Check infrastructure-outputs.json'}
 
-Dashboard: https://console.aws.amazon.com/
-Repository: https://github.com/yagakeerthikiran/pdf-to-excel-saas
+Critical Next Steps:
+1. Configure domain DNS to point to ALB
+2. Set up SSL certificate in AWS Certificate Manager  
+3. Update domain URLs in .env.prod
+4. Configure GitHub secrets and deploy application
+
+Resources:
+- AWS Console: https://console.aws.amazon.com/
+- Repository: https://github.com/yagakeerthikiran/pdf-to-excel-saas
+- Checklist: deployment-checklist.md
 """
     
     send_email_notification("Infrastructure Deployment Successful", success_message)
     
     print(f"\n{Colors.CYAN}📧 Email notification sent to: yagakeerthikiran@gmail.com{Colors.END}")
-    print(f"{Colors.CYAN}📋 Next: Follow SERVICE-SETUP-GUIDE.md for service accounts{Colors.END}")
 
 if __name__ == "__main__":
     main()
