@@ -297,7 +297,7 @@ resource "aws_db_instance" "main" {
   identifier = "${var.app_name}-${var.environment}-db"
 
   engine         = "postgres"
-  engine_version = "15.4"
+  engine_version = "15.7"
   instance_class = "db.t3.micro"
 
   allocated_storage     = 20
