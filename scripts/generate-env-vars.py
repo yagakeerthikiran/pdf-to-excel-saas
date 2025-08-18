@@ -10,6 +10,7 @@ import subprocess
 import json
 import secrets
 import string
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -44,6 +45,108 @@ def run_command(cmd, capture=True, cwd=None):
     """Run command with error handling"""
     result = subprocess.run(cmd, shell=True, capture_output=capture, text=True, cwd=cwd)
     return result.returncode == 0, result.stdout, result.stderr
+
+def validate_env_format(key, value):
+    """Validate environment variable format using improved patterns"""
+    errors = []
+    
+    # Validation patterns (more flexible than schema)
+    patterns = {
+        'AWS_ACCESS_KEY_ID': {
+            'pattern': r'^(AKIA|ASIA)[0-9A-Z]{16}$',
+            'desc': 'AWS Access Key ID format (AKIA for long-term, ASIA for temporary)'
+        },
+        'GITHUB_TOKEN': {
+            'pattern': r'^(ghp_|github_pat_|ghs_)[a-zA-Z0-9_]{20,}$',
+            'desc': 'Valid GitHub Personal Access Token'
+        },
+        'NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY': {
+            'pattern': r'^pk_(test_|live_)[0-9a-zA-Z]{20,}$',
+            'desc': 'Valid Stripe publishable key format'
+        },
+        'STRIPE_SECRET_KEY': {
+            'pattern': r'^sk_(test_|live_)[0-9a-zA-Z]{20,}$',
+            'desc': 'Valid Stripe secret key format'
+        },
+        'STRIPE_WEBHOOK_SECRET': {
+            'pattern': r'^whsec_[0-9a-zA-Z]{20,}$',
+            'desc': 'Valid Stripe webhook secret format'
+        },
+        'SUPABASE_URL': {
+            'pattern': r'^https://[a-zA-Z0-9][a-zA-Z0-9\.-]*\.(supabase\.co|localhost|127\.0\.0\.1).*$',
+            'desc': 'Valid Supabase project URL'
+        },
+        'DATABASE_URL': {
+            'pattern': r'^postgresql://.*',
+            'desc': 'PostgreSQL connection string'
+        }
+    }
+    
+    if key in patterns:
+        pattern_info = patterns[key]
+        if not re.match(pattern_info['pattern'], value):
+            errors.append(f"❌ {key}: Invalid format. {pattern_info['desc']}")
+    
+    # Check for obvious placeholder values
+    placeholder_patterns = [
+        r'^your_.*',
+        r'^.*_your_.*',
+        r'^.*placeholder.*',
+        r'^example.*',
+        r'^test.*key.*',
+        r'^sk_test_.*placeholder.*'
+    ]
+    
+    for pattern in placeholder_patterns:
+        if re.match(pattern, value, re.IGNORECASE):
+            errors.append(f"⚠️  {key}: Appears to be a placeholder value")
+            break
+    
+    return errors
+
+def validate_environment_file(env_file):
+    """Validate environment file and show results"""
+    print_title(f"Validating Environment File: {env_file}")
+    
+    if not os.path.exists(env_file):
+        print_error(f"Environment file not found: {env_file}")
+        return False
+    
+    env_vars = {}
+    with open(env_file, 'r') as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            
+            if '=' not in line:
+                print_warning(f"Invalid line format at line {line_num}: {line}")
+                continue
+            
+            key, value = line.split('=', 1)
+            env_vars[key.strip()] = value.strip()
+    
+    print_info(f"Found {len(env_vars)} environment variables")
+    
+    # Validate each variable
+    all_errors = []
+    for key, value in env_vars.items():
+        if not value or value.strip() == '':
+            all_errors.append(f"⚠️  {key}: Empty value")
+            continue
+        
+        errors = validate_env_format(key, value)
+        all_errors.extend(errors)
+    
+    # Print results
+    if all_errors:
+        print("\n🚨 VALIDATION ERRORS:")
+        for error in all_errors:
+            print(f"  {error}")
+        return False
+    else:
+        print_status("All environment variables passed validation!")
+        return True
 
 def check_current_directory():
     """Check if we're in the right directory"""
@@ -327,22 +430,31 @@ def main():
     if not check_current_directory():
         sys.exit(1)
     
-    # Step 2: Check for deployment outputs
+    # Step 2: Validate existing .env.prod if it exists
+    if os.path.exists('.env.prod'):
+        print_info("Found existing .env.prod file")
+        if validate_environment_file('.env.prod'):
+            print_status("Your .env.prod file looks good! No format issues found.")
+            return
+        else:
+            print_warning("Your .env.prod file has some validation issues (shown above)")
+    
+    # Step 3: Check for deployment outputs
     found_files = check_deployment_outputs()
     
-    # Step 3: Try to extract Terraform outputs
+    # Step 4: Try to extract Terraform outputs
     terraform_outputs = extract_terraform_outputs()
     
-    # Step 4: Check AWS resources manually
+    # Step 5: Check AWS resources manually
     check_aws_resources()
     
-    # Step 5: Generate missing environment variables
+    # Step 6: Generate missing environment variables
     generated_vars = generate_missing_env_vars()
     
-    # Step 6: Create/update .env.prod
+    # Step 7: Create/update .env.prod
     create_env_prod_file(terraform_outputs, generated_vars)
     
-    # Step 7: Show manual steps
+    # Step 8: Show manual steps
     show_manual_steps()
     
     # Final summary
@@ -358,8 +470,9 @@ def main():
     print(f"\n{Colors.CYAN}📋 Next Steps:{Colors.END}")
     print("1. Edit .env.prod and replace placeholder values with real service credentials")
     print("2. Follow the manual steps above to get service API keys")
-    print("3. Run deployment script: python scripts/deploy-infrastructure.py")
-    print("4. Check infrastructure-outputs.json for final URLs")
+    print("3. Run validation: python scripts/validate_env.py --env production --file .env.prod")
+    print("4. Run deployment script: python scripts/deploy-infrastructure.py")
+    print("5. Check infrastructure-outputs.json for final URLs")
 
 if __name__ == "__main__":
     main()
