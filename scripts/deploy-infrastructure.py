@@ -26,9 +26,9 @@ def print_warning(msg): print(f"{Colors.YELLOW}⚠️  {msg}{Colors.END}")
 def print_error(msg): print(f"{Colors.RED}❌ {msg}{Colors.END}")
 def print_info(msg): print(f"{Colors.CYAN}ℹ️  {msg}{Colors.END}")
 
-def run_command(cmd, capture=False):
+def run_command(cmd, capture=False, cwd=None):
     if not capture: print_info(f"Running: {cmd}")
-    result = subprocess.run(cmd, shell=True, capture_output=capture, text=True)
+    result = subprocess.run(cmd, shell=True, capture_output=capture, text=True, cwd=cwd)
     return result.returncode == 0, result.stdout, result.stderr
 
 def check_prerequisites():
