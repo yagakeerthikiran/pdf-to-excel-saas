@@ -3,7 +3,7 @@
 
 param(
     [string]$Environment = "prod",
-    [string]$Region = "us-east-1",
+    [string]$Region = "ap-southeast-2",  # Fixed to Sydney region
     [string]$AppName = "pdf-excel-saas"
 )
 
@@ -13,8 +13,10 @@ $SuccessColor = "Green"
 $WarningColor = "Yellow"
 $InfoColor = "Cyan"
 
-Write-Host "🚀 PDF to Excel SaaS - Infrastructure Deployment" -ForegroundColor $InfoColor
-Write-Host "=================================================" -ForegroundColor $InfoColor
+Write-Host "🚀 PDF to Excel SaaS - Infrastructure Deployment (Sydney Region)" -ForegroundColor $InfoColor
+Write-Host "==============================================================" -ForegroundColor $InfoColor
+Write-Host "Region: $Region" -ForegroundColor $InfoColor
+Write-Host "Environment: $Environment" -ForegroundColor $InfoColor
 
 function Write-Status {
     param([string]$Message)
@@ -74,17 +76,30 @@ try {
     Write-Warning "Docker not found. You can install it later for local builds."
 }
 
-# Check AWS credentials
+# Check AWS credentials and region
 try {
-    $awsIdentity = aws sts get-caller-identity 2>$null | ConvertFrom-Json
+    $awsIdentity = aws sts get-caller-identity --region $Region 2>$null | ConvertFrom-Json
     if ($LASTEXITCODE -eq 0) {
         $accountId = $awsIdentity.Account
-        Write-Status "AWS credentials configured (Account: $accountId)"
+        Write-Status "AWS credentials configured (Account: $accountId, Region: $Region)"
     } else {
-        throw "AWS credentials not configured"
+        throw "AWS credentials not configured for region $Region"
     }
 } catch {
-    Write-Error "AWS credentials not configured. Please run 'aws configure' first."
+    Write-Error "AWS credentials not configured for region $Region. Please run 'aws configure' first."
+    exit 1
+}
+
+# Verify Sydney region access
+try {
+    aws ec2 describe-availability-zones --region $Region 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Status "Sydney region ($Region) access confirmed"
+    } else {
+        throw "Cannot access Sydney region"
+    }
+} catch {
+    Write-Error "Cannot access Sydney region ($Region). Please check your AWS credentials and region configuration."
     exit 1
 }
 
@@ -96,6 +111,8 @@ if (-not (Test-Path ".env.prod")) {
     if (Test-Path ".env.prod.template") {
         Copy-Item ".env.prod.template" ".env.prod"
         Write-Warning "Please edit .env.prod with your actual values before proceeding."
+        Write-Host "Opening .env.prod in notepad..."
+        Start-Process notepad ".env.prod"
         Read-Host "Press Enter when you've updated .env.prod with real values"
     } else {
         Write-Error ".env.prod.template not found. Please create environment configuration."
@@ -116,40 +133,45 @@ if (Test-Path "scripts\validate_env.py") {
     Write-Warning "Environment validation script not found. Skipping validation."
 }
 
-# Create S3 bucket for Terraform state
-$terraformStateBucket = "$AppName-terraform-state"
+# Create S3 bucket for Terraform state (with unique suffix)
+$timestamp = (Get-Date).ToString("yyyyMMdd")
+$terraformStateBucket = "$AppName-terraform-state-$timestamp"
 Write-Host "`n🪣 Setting up Terraform State Storage..." -ForegroundColor $InfoColor
 
 try {
-    aws s3 ls "s3://$terraformStateBucket" 2>$null | Out-Null
+    aws s3 ls "s3://$terraformStateBucket" --region $Region 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) {
         Write-Status "Terraform state bucket already exists"
     } else {
-        Write-Host "Creating Terraform state bucket..."
+        Write-Host "Creating Terraform state bucket: $terraformStateBucket"
         aws s3 mb "s3://$terraformStateBucket" --region $Region
         
-        # Enable versioning
-        aws s3api put-bucket-versioning --bucket $terraformStateBucket --versioning-configuration Status=Enabled
-        
-        # Enable encryption
-        $encryptionConfig = @{
-            Rules = @(
-                @{
-                    ApplyServerSideEncryptionByDefault = @{
-                        SSEAlgorithm = "AES256"
+        if ($LASTEXITCODE -eq 0) {
+            # Enable versioning
+            aws s3api put-bucket-versioning --bucket $terraformStateBucket --versioning-configuration Status=Enabled --region $Region
+            
+            # Enable encryption
+            $encryptionConfig = @{
+                Rules = @(
+                    @{
+                        ApplyServerSideEncryptionByDefault = @{
+                            SSEAlgorithm = "AES256"
+                        }
                     }
-                }
-            )
-        } | ConvertTo-Json -Depth 5
-        
-        $encryptionConfig | Out-File -FilePath "temp-encryption.json" -Encoding UTF8
-        aws s3api put-bucket-encryption --bucket $terraformStateBucket --server-side-encryption-configuration file://temp-encryption.json
-        Remove-Item "temp-encryption.json"
-        
-        Write-Status "Terraform state bucket created and configured"
+                )
+            } | ConvertTo-Json -Depth 5
+            
+            $encryptionConfig | Out-File -FilePath "temp-encryption.json" -Encoding UTF8
+            aws s3api put-bucket-encryption --bucket $terraformStateBucket --server-side-encryption-configuration file://temp-encryption.json --region $Region
+            Remove-Item "temp-encryption.json"
+            
+            Write-Status "Terraform state bucket created and configured"
+        } else {
+            Write-Warning "Could not create Terraform state bucket. Continuing with local state."
+        }
     }
 } catch {
-    Write-Warning "Could not verify or create Terraform state bucket. Continuing anyway."
+    Write-Warning "Could not verify or create Terraform state bucket. Continuing with local state."
 }
 
 # Initialize and deploy infrastructure
@@ -158,6 +180,22 @@ Write-Host "`n🏗️  Deploying Infrastructure with Terraform..." -ForegroundCo
 Push-Location "infra"
 
 try {
+    # Create backend configuration for remote state
+    if ($terraformStateBucket) {
+        $backendConfig = @"
+terraform {
+  backend "s3" {
+    bucket         = "$terraformStateBucket"
+    key            = "terraform.tfstate"
+    region         = "$Region"
+    encrypt        = true
+  }
+}
+"@
+        $backendConfig | Out-File -FilePath "backend.tf" -Encoding UTF8
+        Write-Status "Terraform backend configuration created"
+    }
+
     # Initialize Terraform
     Write-Host "Initializing Terraform..."
     terraform init
@@ -180,7 +218,7 @@ try {
     terraform show -no-color tfplan | Select-String "Plan:|will be created|will be updated|will be destroyed"
 
     # Confirm deployment
-    Write-Host "`n⚠️  This will create AWS resources that may incur costs." -ForegroundColor $WarningColor
+    Write-Host "`n⚠️  This will create AWS resources in Sydney ($Region) that may incur costs." -ForegroundColor $WarningColor
     $confirm = Read-Host "Do you want to proceed with the deployment? (y/N)"
 
     if ($confirm -match "^[Yy]$") {
@@ -197,16 +235,19 @@ try {
                 $s3Bucket = terraform output -raw s3_bucket_name 2>$null
                 $ecrFrontend = terraform output -raw ecr_frontend_url 2>$null
                 $ecrBackend = terraform output -raw ecr_backend_url 2>$null
+                $dbEndpoint = terraform output -raw database_endpoint 2>$null
                 
                 if ([string]::IsNullOrEmpty($albDns)) { $albDns = "N/A" }
                 if ([string]::IsNullOrEmpty($s3Bucket)) { $s3Bucket = "N/A" }
                 if ([string]::IsNullOrEmpty($ecrFrontend)) { $ecrFrontend = "N/A" }
                 if ([string]::IsNullOrEmpty($ecrBackend)) { $ecrBackend = "N/A" }
+                if ([string]::IsNullOrEmpty($dbEndpoint)) { $dbEndpoint = "N/A" }
                 
                 Write-Host "• Load Balancer DNS: $albDns"
                 Write-Host "• S3 Bucket: $s3Bucket"
                 Write-Host "• Frontend ECR: $ecrFrontend"
                 Write-Host "• Backend ECR: $ecrBackend"
+                Write-Host "• Database Endpoint: $dbEndpoint"
                 
                 # Save outputs to file
                 $outputs = @"
@@ -217,10 +258,12 @@ ALB_DNS_NAME=$albDns
 S3_BUCKET_NAME=$s3Bucket
 ECR_FRONTEND_URL=$ecrFrontend
 ECR_BACKEND_URL=$ecrBackend
+DATABASE_ENDPOINT=$dbEndpoint
 AWS_ACCOUNT_ID=$accountId
 AWS_REGION=$Region
 ENVIRONMENT=$Environment
 APP_NAME=$AppName
+TERRAFORM_STATE_BUCKET=$terraformStateBucket
 "@
                 $outputs | Out-File -FilePath "..\infrastructure-outputs.txt" -Encoding UTF8
                 Write-Status "Infrastructure outputs saved to infrastructure-outputs.txt"
@@ -246,39 +289,6 @@ APP_NAME=$AppName
 }
 
 Pop-Location
-
-# Create ECR repositories if they don't exist
-Write-Host "`n📦 Setting up Container Repositories..." -ForegroundColor $InfoColor
-
-# Check and create frontend repository
-Write-Host "Checking frontend ECR repository..."
-aws ecr describe-repositories --repository-names "$AppName-frontend" --region $Region 2>$null | Out-Null
-if ($LASTEXITCODE -eq 0) {
-    Write-Status "Frontend ECR repository already exists"
-} else {
-    Write-Host "Creating frontend ECR repository..."
-    aws ecr create-repository --repository-name "$AppName-frontend" --region $Region --image-scanning-configuration scanOnPush=true
-    if ($LASTEXITCODE -eq 0) {
-        Write-Status "Frontend ECR repository created"
-    } else {
-        Write-Warning "Could not create frontend ECR repository"
-    }
-}
-
-# Check and create backend repository
-Write-Host "Checking backend ECR repository..."
-aws ecr describe-repositories --repository-names "$AppName-backend" --region $Region 2>$null | Out-Null
-if ($LASTEXITCODE -eq 0) {
-    Write-Status "Backend ECR repository already exists"
-} else {
-    Write-Host "Creating backend ECR repository..."
-    aws ecr create-repository --repository-name "$AppName-backend" --region $Region --image-scanning-configuration scanOnPush=true
-    if ($LASTEXITCODE -eq 0) {
-        Write-Status "Backend ECR repository created"
-    } else {
-        Write-Warning "Could not create backend ECR repository"
-    }
-}
 
 # Build and push initial images (if Docker is available)
 $dockerAvailable = $false
@@ -402,7 +412,7 @@ if ($albDns -and $albDns -ne "N/A") {
 Write-Host "`n🎉 Deployment Summary" -ForegroundColor $SuccessColor
 Write-Host "===================" -ForegroundColor $SuccessColor
 Write-Host "• Environment: $Environment"
-Write-Host "• AWS Region: $Region"
+Write-Host "• AWS Region: $Region (Sydney)"
 Write-Host "• AWS Account: $accountId"
 Write-Host "• Application: $AppName"
 if ($albDns -and $albDns -ne "N/A") {
@@ -417,7 +427,7 @@ if ($s3Bucket -and $s3Bucket -ne "N/A") {
 }
 Write-Host "• ECR Repositories: Created"
 Write-Host "• Monitoring: Configured"
-Write-Host "• Infrastructure: ✅ Deployed"
+Write-Host "• Infrastructure: ✅ Deployed in Sydney"
 
 Write-Host "`n📋 Next Steps:" -ForegroundColor $InfoColor
 if ($albDns -and $albDns -ne "N/A") {
@@ -426,28 +436,28 @@ if ($albDns -and $albDns -ne "N/A") {
 } else {
     Write-Host "1. Check Terraform outputs for Load Balancer DNS"
 }
-Write-Host "2. Set up SSL certificate in AWS Certificate Manager"
+Write-Host "2. Set up SSL certificate in AWS Certificate Manager (Sydney region)"
 Write-Host "3. Update GitHub repository secrets for CI/CD"
 Write-Host "4. Run 'git push origin main' to trigger deployment pipeline"
 
-Write-Host "`n✅ Infrastructure deployment completed successfully!" -ForegroundColor $SuccessColor
+Write-Host "`n✅ Infrastructure deployment completed successfully in Sydney region!" -ForegroundColor $SuccessColor
 
 # Create post-deployment checklist
 $checklist = @"
-# Post-Deployment Checklist
+# Post-Deployment Checklist - Sydney Region
 
 ## Infrastructure ✅
-- [x] AWS VPC and networking
-- [x] RDS PostgreSQL database
-- [x] S3 bucket for file storage
-- [x] ECS cluster and services
-- [x] Application Load Balancer
-- [x] ECR repositories
-- [x] CloudWatch logging
+- [x] AWS VPC and networking (ap-southeast-2)
+- [x] RDS PostgreSQL database (Sydney)
+- [x] S3 bucket for file storage (Sydney)
+- [x] ECS cluster and services (Sydney)
+- [x] Application Load Balancer (Sydney)
+- [x] ECR repositories (Sydney)
+- [x] CloudWatch logging (Sydney)
 
 ## Next Steps
 - [ ] Configure domain DNS
-- [ ] Set up SSL certificate
+- [ ] Set up SSL certificate (Sydney region)
 - [ ] Configure GitHub secrets
 - [ ] Test application deployment
 - [ ] Set up monitoring alerts
@@ -457,10 +467,11 @@ $checklist = @"
 
 ## Important URLs
 - Application: http://$albDns
-- AWS Console: https://console.aws.amazon.com/
+- AWS Console Sydney: https://ap-southeast-2.console.aws.amazon.com/
 - GitHub Repository: https://github.com/yagakeerthikiran/pdf-to-excel-saas
 
 ## Generated on: $(Get-Date)
+## Region: $Region (Sydney, Australia)
 "@
 
 $checklist | Out-File -FilePath "deployment-checklist.md" -Encoding UTF8
