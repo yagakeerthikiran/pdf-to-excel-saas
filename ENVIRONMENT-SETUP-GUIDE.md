@@ -23,6 +23,116 @@ This script will:
 
 ---
 
+## 📁 **Active Scripts Overview & Flow**
+
+### **🎯 Core Active Scripts (Sydney Region)**
+
+#### **Main Deployment Flow**
+```
+python scripts/deploy-infrastructure.py
+├── scripts/validate_env.py (validates environment)
+├── infra/main.tf (Terraform infrastructure)
+├── .env.prod.template (environment template)
+└── env.schema.json (validation rules)
+```
+
+#### **📋 Script Dependencies & Relationships**
+
+• **`scripts/deploy-infrastructure.py`** - **MAIN SCRIPT**
+  - ✅ **Purpose**: Complete infrastructure deployment
+  - ✅ **Dependencies**: validate_env.py, infra/main.tf
+  - ✅ **Output Files**: infrastructure-outputs.json, infrastructure-outputs.env, deployment-summary.md
+  - ✅ **Location**: Project root directory
+
+• **`scripts/validate_env.py`** - **VALIDATION SCRIPT**
+  - ✅ **Purpose**: Validates environment variables
+  - ✅ **Dependencies**: env.schema.json
+  - ✅ **Called by**: deploy-infrastructure.py
+  - ✅ **Output**: Console validation results
+
+• **`scripts/generate-env-vars.py`** - **TROUBLESHOOTER**
+  - ✅ **Purpose**: Generates missing env vars & troubleshoots
+  - ✅ **Dependencies**: .env.prod.template
+  - ✅ **Output Files**: .env.prod (updated)
+  - ✅ **Location**: Project root directory
+
+• **`backend/email_service.py`** - **EMAIL NOTIFICATIONS**
+  - ✅ **Purpose**: Replaces Slack with email notifications
+  - ✅ **Dependencies**: SMTP environment variables
+  - ✅ **Used by**: monitoring/intelligent_agent.py
+
+### **🔄 Script Execution Flow**
+```
+1. python scripts/generate-env-vars.py  (troubleshoot & generate)
+   ↓
+2. python scripts/deploy-infrastructure.py  (main deployment)
+   ├── validates environment with validate_env.py
+   ├── creates Terraform state bucket
+   ├── deploys infrastructure with infra/main.tf
+   ├── captures outputs to infrastructure-outputs.json
+   └── creates deployment-summary.md
+   ↓
+3. Output files created in project root:
+   • infrastructure-outputs.json
+   • infrastructure-outputs.env
+   • deployment-summary.md
+   • .env.prod (if not exists)
+```
+
+### **📁 Output Files Location**
+All output files are created in the **project root directory** (`C:\AI\GIT_Repos\pdf-to-excel-saas\`):
+
+• **`infrastructure-outputs.json`** - Complete Terraform outputs in JSON format
+• **`infrastructure-outputs.env`** - Environment variables format
+• **`deployment-summary.md`** - Deployment summary and next steps
+• **`.env.prod`** - Production environment file (created if missing)
+
+---
+
+## 🚨 **Technical Debt Cleanup - Duplicate/Inactive Scripts**
+
+### **🗑️ INACTIVE SCRIPTS (Recommend Cleanup)**
+
+• **`scripts/deploy-infrastructure.ps1`** - **DUPLICATE** (PowerShell version)
+  - 🚫 **Status**: INACTIVE - Replaced by Python version
+  - 🧹 **Action**: Can be deleted (Python version is more robust)
+
+• **`scripts/deploy-infrastructure.sh`** - **DUPLICATE** (Bash version)
+  - 🚫 **Status**: INACTIVE - Replaced by Python version
+  - 🧹 **Action**: Can be deleted (Python version is more robust)
+
+• **`scripts/deploy-windows.bat`** - **DUPLICATE** (Batch wrapper)
+  - 🚫 **Status**: INACTIVE - Calls PowerShell script
+  - 🧹 **Action**: Can be deleted (Python version is direct)
+
+• **`scripts/deploy_manual.py`** - **DUPLICATE** (Manual deployment)
+  - 🚫 **Status**: INACTIVE - Superseded by main script
+  - 🧹 **Action**: Can be deleted (functionality merged)
+
+• **`scripts/setup-github-secrets.ps1/.sh`** - **SEPARATE FEATURE**
+  - ⚠️ **Status**: INACTIVE for now (GitHub secrets setup)
+  - 🧹 **Action**: Keep for later GitHub Actions setup
+
+• **`scripts/deploy-infrastructure-fix.py`** - **TEMPORARY FIX**
+  - 🚫 **Status**: INACTIVE - Fix merged into main script
+  - 🧹 **Action**: Can be deleted (fix applied to main script)
+
+• **`infra/serverless.yml`** - **UNUSED CONFIG**
+  - 🚫 **Status**: INACTIVE - Using ECS instead of serverless
+  - 🧹 **Action**: Can be deleted (not used in current architecture)
+
+### **✅ ACTIVE SCRIPTS (Keep)**
+
+• **`scripts/deploy-infrastructure.py`** - ✅ MAIN DEPLOYMENT SCRIPT
+• **`scripts/validate_env.py`** - ✅ ENVIRONMENT VALIDATION  
+• **`scripts/generate-env-vars.py`** - ✅ TROUBLESHOOTER
+• **`backend/email_service.py`** - ✅ EMAIL NOTIFICATIONS
+• **`infra/main.tf`** - ✅ TERRAFORM INFRASTRUCTURE
+• **`.env.prod.template`** - ✅ ENVIRONMENT TEMPLATE
+• **`env.schema.json`** - ✅ VALIDATION RULES
+
+---
+
 ## 📝 **Manual Steps for Each Environment Variable**
 
 ### **1. NEXT_PUBLIC_APP_URL & BACKEND_URL**
@@ -81,18 +191,18 @@ GITHUB_TOKEN=github_pat_11ABCDEFGH_1234567890abcdefghijklmnopqrstuvwxyz
 ### **5. Email Notifications (Replaces Slack)**
 
 **Gmail App Password Setup:**
-1. Go to Google Account → Security
+1. Go to **https://myaccount.google.com/apppasswords**
 2. Enable 2-Factor Authentication (required)
-3. Go to "App passwords"
-4. Generate password for "Mail"
-5. Use this password (not your Gmail password)
+3. Generate app password for "Mail"
+4. Use this 16-character password (not your Gmail password)
 
+**Step 3: Update Environment Variables**
 ```bash
-NOTIFICATION_EMAIL=yagakeerthikiran@gmail.com
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
-SMTP_USER=your-notifications@gmail.com
-SMTP_PASSWORD=your_16_character_app_password
+SMTP_USER=yagakeerthikiran@gmail.com
+SMTP_PASS=your_gmail_app_password
+NOTIFICATION_EMAIL=yagakeerthikiran@gmail.com
 ```
 
 ### **6. Supabase Variables (Free Tier)**
@@ -183,6 +293,27 @@ POSTHOG_PROJECT_API_KEY=phc_ABC123...  # Same as above
 
 ---
 
+## 🔧 **Terraform Backend Error Fix**
+
+### **✅ Fixed in Latest Script**
+The deployment script now automatically handles:
+• **Backend configuration changes**
+• **State migration** with `-migrate-state`
+• **Fallback to reconfigure** if migration fails
+
+**Error Message Fixed:**
+```
+Error: Backend configuration changed
+```
+
+**Resolution Applied:**
+The script now tries these in order:
+1. `terraform init` (normal)
+2. `terraform init -migrate-state` (if backend changed)
+3. `terraform init -reconfigure` (if migration fails)
+
+---
+
 ## 🔧 **Troubleshooting Missing Files**
 
 ### **If infrastructure-outputs.json is Missing:**
@@ -222,7 +353,7 @@ aws ecr describe-repositories --region ap-southeast-2
 # If infrastructure isn't deployed yet
 python scripts/deploy-infrastructure.py
 
-# This will create infrastructure-outputs.json
+# This will create infrastructure-outputs.json in project root
 ```
 
 ---
@@ -274,12 +405,15 @@ NEXT_PUBLIC_APP_URL=http://pdf-excel-saas-prod-alb-123456.ap-southeast-2.elb.ama
 BACKEND_URL=http://pdf-excel-saas-prod-alb-123456.ap-southeast-2.elb.amazonaws.com/api
 BACKEND_API_KEY=abc123def456ghi789jkl012mno345pqr678
 
-# Email Notifications
+# Email Notifications (Replaces Slack)
 NOTIFICATION_EMAIL=yagakeerthikiran@gmail.com
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
-SMTP_USER=notifications@yourdomain.com
-SMTP_PASSWORD=abcd efgh ijkl mnop
+SMTP_USER=yagakeerthikiran@gmail.com
+SMTP_PASS=abcd efgh ijkl mnop
+
+# GitHub Integration
+GITHUB_TOKEN=github_pat_11ABCDEFGH_1234567890abcdefghijklmnopqrstuvwxyz
 
 # All other services configured...
 ```
@@ -304,5 +438,6 @@ If you encounter issues:
 2. **Check AWS Console**: https://ap-southeast-2.console.aws.amazon.com/
 3. **Verify Terraform state**: `cd infra && terraform show`
 4. **Check deployment logs** for error messages
+5. **Verify output files**: Check project root for infrastructure-outputs.json
 
 The scripts are designed to be **resume-safe** - you can run them multiple times without issues!
