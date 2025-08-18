@@ -17,7 +17,7 @@ provider "aws" {
 variable "aws_region" {
   description = "AWS region"
   type        = string
-  default     = "us-east-1"
+  default     = "ap-southeast-2"
 }
 
 variable "environment" {
@@ -533,25 +533,15 @@ resource "aws_iam_role_policy" "ecs_task_role_policy" {
   })
 }
 
-# CloudWatch Log Groups
+# CloudWatch Log Groups (without tags to avoid permission issues)
 resource "aws_cloudwatch_log_group" "frontend" {
   name              = "/ecs/${var.app_name}-${var.environment}-frontend"
   retention_in_days = 7
-
-  tags = {
-    Name        = "${var.app_name}-${var.environment}-frontend-logs"
-    Environment = var.environment
-  }
 }
 
 resource "aws_cloudwatch_log_group" "backend" {
   name              = "/ecs/${var.app_name}-${var.environment}-backend"
   retention_in_days = 7
-
-  tags = {
-    Name        = "${var.app_name}-${var.environment}-backend-logs"
-    Environment = var.environment
-  }
 }
 
 # ECS Task Definitions
@@ -742,6 +732,12 @@ output "s3_bucket_name" {
 output "database_endpoint" {
   description = "RDS instance endpoint"
   value       = aws_db_instance.main.endpoint
+  sensitive   = true
+}
+
+output "database_url" {
+  description = "Database connection URL"
+  value       = "postgresql://${aws_db_instance.main.username}:${random_password.db_password.result}@${aws_db_instance.main.endpoint}/${aws_db_instance.main.db_name}"
   sensitive   = true
 }
 
