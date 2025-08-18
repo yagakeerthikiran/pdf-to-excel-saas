@@ -2,6 +2,170 @@
 """
 Infrastructure Deployment Script - Sydney Region (ap-southeast-2)
 Resume-safe deployment script for PDF to Excel SaaS
+
+===================================================================================
+CRITICAL DOCUMENTATION FOR FUTURE CLAUDE INSTANCES AND DEVELOPERS
+===================================================================================
+
+⚠️  COMMON RECURRING ISSUES AND THEIR SOLUTIONS:
+
+1. TERRAFORM BACKEND MIGRATION ERROR:
+   Error: "Backend configuration changed" / "terraform init" fails
+   Solution: Use "terraform init -migrate-state" or "terraform init -reconfigure"
+   This script handles this automatically in deploy_infrastructure()
+
+2. ENVIRONMENT VALIDATION ERRORS:
+   Error: "Invalid format" for AWS/GitHub/Stripe keys
+   Problem: env.schema.json has overly strict regex patterns
+   Solution: Update env.schema.json with flexible patterns (see validate_env_format())
+   Files to check: env.schema.json, scripts/validate_env.py
+
+3. "ARGUMENT OF TYPE 'NONETYPE' IS NOT ITERABLE":
+   Problem: Script tries to check string in None value
+   Solution: Always check if variables are None before using 'in' operator
+   Example: if stderr and "error_text" in stderr: (not if "error_text" in stderr:)
+
+4. AWS CREDENTIALS ISSUES:
+   Problem: AWS credentials expired or not configured
+   Solution: Run 'aws configure' and ensure ap-southeast-2 region
+   Check: aws sts get-caller-identity --region ap-southeast-2
+
+5. TERRAFORM STATE CONFLICTS:
+   Problem: Multiple developers sharing same state
+   Solution: Use S3 backend with unique bucket per account
+   Format: {APP_NAME}-terraform-state-{ACCOUNT_ID}
+
+6. DOCKER/ECR LOGIN FAILURES:
+   Problem: Docker not logged into ECR
+   Solution: aws ecr get-login-password | docker login
+   This script handles ECR login automatically
+
+7. ENVIRONMENT FILE ISSUES:
+   Problem: .env.prod has placeholder values
+   Solution: Use scripts/generate-env-vars.py to create real values
+   Check: All services (Supabase, Stripe, Sentry, PostHog) configured
+
+8. PERMISSION ERRORS:
+   Problem: IAM permissions insufficient
+   Solution: Ensure user has Admin access or specific Terraform permissions
+   Required: EC2, RDS, S3, ECR, ECS, ELB, IAM, CloudWatch
+
+9. REGION MISMATCH:
+   Problem: Resources created in wrong region
+   Solution: Always use ap-southeast-2 (Sydney) - enforced in script
+   Check: AWS_REGION environment variable
+
+10. RESUME-SAFETY:
+    Problem: Script fails midway, resources partially created
+    Solution: All functions check existing resources before creating
+    Safe to re-run: script skips existing resources
+
+===================================================================================
+DEPLOYMENT WORKFLOW OVERVIEW:
+===================================================================================
+
+1. Prerequisites Check:
+   - AWS CLI, Terraform, Python installed
+   - AWS credentials configured
+   - Correct region (ap-southeast-2)
+
+2. Environment Validation:
+   - Check .env.prod exists and has real values
+   - Validate formats against schema
+   - Run scripts/validate_env.py
+
+3. Terraform State Setup:
+   - Create S3 bucket: {app-name}-terraform-state-{account-id}
+   - Configure backend with encryption and versioning
+   - Handle migration/reconfiguration automatically
+
+4. Infrastructure Deployment:
+   - terraform init (with migration handling)
+   - terraform plan (show summary)
+   - terraform apply (with user confirmation)
+   - Capture outputs to JSON/ENV files
+
+5. Container Setup:
+   - Create ECR repositories
+   - Docker login to ECR
+   - Ready for image builds
+
+6. Documentation:
+   - Generate deployment summary
+   - Save all outputs and next steps
+   - Create troubleshooting guide
+
+===================================================================================
+FILE STRUCTURE:
+===================================================================================
+
+Root Directory:
+├── .env.prod.template          # Template with placeholder values
+├── .env.prod                   # Actual production config (gitignored)
+├── env.schema.json             # Validation rules for env vars
+├── infrastructure-outputs.json # Terraform outputs (created by script)
+├── infrastructure-outputs.env  # Environment format outputs
+├── deployment-summary.md       # Complete deployment documentation
+├── scripts/
+│   ├── deploy-infrastructure.py    # THIS SCRIPT - main deployment
+│   ├── validate_env.py            # Environment validation
+│   └── generate-env-vars.py       # Env var generator/troubleshooter
+└── infra/
+    ├── main.tf                     # Main Terraform configuration
+    ├── backend.tf                  # S3 backend config (created by script)
+    ├── variables.tf                # Terraform variables
+    ├── outputs.tf                  # Terraform outputs
+    └── .terraform/                 # Terraform working directory
+
+===================================================================================
+ENVIRONMENT VARIABLES GUIDE:
+===================================================================================
+
+CRITICAL VARIABLES (must be real values):
+- AWS_ACCESS_KEY_ID: Format AKIA[16 chars] or ASIA[16 chars]
+- AWS_SECRET_ACCESS_KEY: AWS secret key
+- GITHUB_TOKEN: Format ghp_* or github_pat_* (not placeholder)
+- STRIPE_SECRET_KEY: Format sk_test_* or sk_live_*
+- SUPABASE_URL: Format https://[project].supabase.co
+- DATABASE_URL: Auto-generated by Terraform
+
+GENERATED AUTOMATICALLY:
+- BACKEND_API_KEY: 32-byte secure key
+- JWT_SECRET_KEY: 32-byte secure key  
+- ENCRYPTION_KEY: 32-byte secure key
+
+MANUAL SETUP REQUIRED:
+- Supabase: Create project at https://supabase.com
+- Stripe: Create account at https://stripe.com
+- Sentry: Create project at https://sentry.io
+- PostHog: Create account at https://posthog.com
+- GitHub: Personal Access Token with repo, workflow, packages scopes
+
+===================================================================================
+TROUBLESHOOTING COMMANDS:
+===================================================================================
+
+# Fix validation errors:
+python scripts/generate-env-vars.py
+
+# Check environment:
+python scripts/validate_env.py --env production --file .env.prod
+
+# Manual Terraform commands:
+cd infra
+terraform init -reconfigure
+terraform plan -var="aws_region=ap-southeast-2"
+terraform apply
+
+# Check AWS resources:
+aws sts get-caller-identity --region ap-southeast-2
+aws s3 ls --region ap-southeast-2
+aws rds describe-db-instances --region ap-southeast-2
+
+# ECR login:
+aws ecr get-login-password --region ap-southeast-2 | docker login --username AWS --password-stdin [account].dkr.ecr.ap-southeast-2.amazonaws.com
+
+===================================================================================
 """
 
 import os
@@ -43,7 +207,7 @@ def print_title(msg):
     print("=" * (len(msg) + 4))
 
 def run_command(cmd, capture=False, cwd=None, check=True):
-    """Run command with error handling"""
+    """Run command with error handling and proper None checking"""
     if not capture: 
         print_info(f"Running: {cmd}")
     
@@ -60,9 +224,9 @@ def run_command(cmd, capture=False, cwd=None, check=True):
             print_error(f"Command failed: {cmd}")
             if result.stderr:
                 print(f"Error: {result.stderr}")
-        return False, result.stdout, result.stderr
+        return False, result.stdout or "", result.stderr or ""
     
-    return result.returncode == 0, result.stdout, result.stderr
+    return result.returncode == 0, result.stdout or "", result.stderr or ""
 
 def check_prerequisites():
     """Check if all required tools are installed"""
@@ -91,18 +255,24 @@ def check_prerequisites():
         return False
     
     # Check AWS credentials
-    success, stdout, _ = run_command(
+    success, stdout, stderr = run_command(
         f'aws sts get-caller-identity --region {AWS_REGION}', 
         capture=True, 
         check=False
     )
     
-    if success:
-        account_info = json.loads(stdout)
-        print_status(f"AWS credentials valid - Account: {account_info['Account']}")
-        return True
+    if success and stdout:
+        try:
+            account_info = json.loads(stdout)
+            print_status(f"AWS credentials valid - Account: {account_info['Account']}")
+            return True
+        except json.JSONDecodeError:
+            print_error("Could not parse AWS account info")
+            return False
     else:
         print_error("AWS credentials not configured. Run 'aws configure' first.")
+        if stderr:
+            print(f"Error details: {stderr}")
         return False
 
 def validate_environment():
@@ -124,13 +294,7 @@ def validate_environment():
                 dst.write(content)
             
             print_warning("Please edit .env.prod with your actual values before continuing.")
-            print_info("Opening .env.prod for editing...")
-            
-            # Try to open with default editor
-            if os.name == 'nt':  # Windows
-                os.system('notepad .env.prod')
-            else:  # Unix-like
-                os.system('${EDITOR:-nano} .env.prod')
+            print_info("You can use: python scripts/generate-env-vars.py")
             
             input("Press Enter when you've updated .env.prod with real values...")
         else:
@@ -140,8 +304,9 @@ def validate_environment():
     # Run validation script
     if Path('scripts/validate_env.py').exists():
         print_info("Running environment validation...")
-        success, _, _ = run_command(
+        success, stdout, stderr = run_command(
             'python scripts/validate_env.py --env production --file .env.prod',
+            capture=True,
             check=False
         )
         
@@ -150,6 +315,8 @@ def validate_environment():
             return True
         else:
             print_error("Environment validation failed. Please fix the issues above.")
+            if stderr:
+                print(f"Validation errors: {stderr}")
             return False
     else:
         print_warning("Validation script not found. Skipping validation.")
@@ -160,16 +327,23 @@ def create_terraform_state_bucket():
     print_title("Setting up Terraform State Storage")
     
     # Get account ID for unique bucket name
-    success, stdout, _ = run_command(
+    success, stdout, stderr = run_command(
         f'aws sts get-caller-identity --region {AWS_REGION}', 
         capture=True
     )
     
-    if not success:
+    if not success or not stdout:
         print_error("Could not get AWS account ID")
+        if stderr:
+            print(f"Error: {stderr}")
         return None
     
-    account_id = json.loads(stdout)['Account']
+    try:
+        account_id = json.loads(stdout)['Account']
+    except (json.JSONDecodeError, KeyError) as e:
+        print_error(f"Could not parse account ID: {e}")
+        return None
+    
     bucket_name = f"{APP_NAME}-terraform-state-{account_id}"
     
     # Check if bucket already exists
@@ -185,12 +359,15 @@ def create_terraform_state_bucket():
     
     # Create bucket
     print_info(f"Creating Terraform state bucket: {bucket_name}")
-    success, _, _ = run_command(
-        f'aws s3 mb s3://{bucket_name} --region {AWS_REGION}'
+    success, _, stderr = run_command(
+        f'aws s3 mb s3://{bucket_name} --region {AWS_REGION}',
+        check=False
     )
     
     if not success:
         print_warning("Could not create state bucket. Using local state.")
+        if stderr:
+            print(f"Error: {stderr}")
         return None
     
     # Configure bucket
@@ -200,7 +377,8 @@ def create_terraform_state_bucket():
     run_command(
         f'aws s3api put-bucket-versioning --bucket {bucket_name} '
         f'--versioning-configuration Status=Enabled --region {AWS_REGION}',
-        capture=True
+        capture=True,
+        check=False
     )
     
     # Enable encryption
@@ -212,21 +390,24 @@ def create_terraform_state_bucket():
         }]
     }
     
-    with open('/tmp/encryption.json', 'w') as f:
-        json.dump(encryption_config, f)
-    
-    run_command(
-        f'aws s3api put-bucket-encryption --bucket {bucket_name} '
-        f'--server-side-encryption-configuration file:///tmp/encryption.json '
-        f'--region {AWS_REGION}',
-        capture=True
-    )
-    
-    # Clean up temp file
+    # Write to temp file with proper path handling
+    temp_file = 'encryption_temp.json'
     try:
-        os.remove('/tmp/encryption.json')
-    except:
-        pass
+        with open(temp_file, 'w') as f:
+            json.dump(encryption_config, f)
+        
+        run_command(
+            f'aws s3api put-bucket-encryption --bucket {bucket_name} '
+            f'--server-side-encryption-configuration file://{temp_file} '
+            f'--region {AWS_REGION}',
+            capture=True,
+            check=False
+        )
+        
+        # Clean up temp file
+        os.remove(temp_file)
+    except Exception as e:
+        print_warning(f"Could not configure bucket encryption: {e}")
     
     print_status(f"Terraform state bucket created: {bucket_name}")
     return bucket_name
@@ -269,9 +450,10 @@ def deploy_infrastructure():
     print_info("Initializing Terraform...")
     
     # Try normal init first
-    success, _, stderr = run_command('terraform init', cwd='infra', check=False)
+    success, stdout, stderr = run_command('terraform init', cwd='infra', check=False)
     
-    if not success and "Backend configuration changed" in stderr:
+    # Handle backend configuration changes - CRITICAL FIX
+    if not success and stderr and "Backend configuration changed" in stderr:
         print_warning("Backend configuration changed, attempting migration...")
         success, _, _ = run_command('terraform init -migrate-state', cwd='infra', check=False)
         
@@ -281,23 +463,28 @@ def deploy_infrastructure():
     
     if not success:
         print_error("Terraform init failed")
+        if stderr:
+            print(f"Error details: {stderr}")
         return False
     
     print_status("Terraform initialized successfully")
     
     # Plan deployment
     print_info("Planning infrastructure deployment...")
-    success, _, _ = run_command(
+    success, _, stderr = run_command(
         f'terraform plan '
         f'-var="aws_region={AWS_REGION}" '
         f'-var="environment={ENVIRONMENT}" '
         f'-var="app_name={APP_NAME}" '
         f'-out=tfplan',
-        cwd='infra'
+        cwd='infra',
+        check=False
     )
     
     if not success:
         print_error("Terraform plan failed")
+        if stderr:
+            print(f"Error details: {stderr}")
         return False
     
     # Show plan summary
@@ -313,7 +500,7 @@ def deploy_infrastructure():
         # Extract plan summary
         lines = stdout.split('\n')
         for line in lines:
-            if 'Plan:' in line or 'will be created' in line or 'will be updated' in line or 'will be destroyed' in line:
+            if any(keyword in line for keyword in ['Plan:', 'will be created', 'will be updated', 'will be destroyed']):
                 print(line)
     
     # Confirm deployment
@@ -326,7 +513,7 @@ def deploy_infrastructure():
     
     # Apply configuration
     print_info("Applying Terraform configuration...")
-    success, _, _ = run_command('terraform apply tfplan', cwd='infra')
+    success, _, stderr = run_command('terraform apply tfplan', cwd='infra', check=False)
     
     if success:
         print_status("Infrastructure deployment completed!")
@@ -334,6 +521,8 @@ def deploy_infrastructure():
         return True
     else:
         print_error("Infrastructure deployment failed!")
+        if stderr:
+            print(f"Error details: {stderr}")
         return False
 
 def capture_terraform_outputs():
@@ -360,7 +549,7 @@ def capture_terraform_outputs():
             check=False
         )
         
-        if success and stdout.strip():
+        if success and stdout and stdout.strip():
             outputs[key] = stdout.strip()
         else:
             outputs[key] = "N/A"
@@ -368,12 +557,16 @@ def capture_terraform_outputs():
     # Get account ID
     success, stdout, _ = run_command(
         f'aws sts get-caller-identity --region {AWS_REGION}',
-        capture=True
+        capture=True,
+        check=False
     )
     
-    if success:
-        account_id = json.loads(stdout)['Account']
-        outputs['aws_account_id'] = account_id
+    if success and stdout:
+        try:
+            account_id = json.loads(stdout)['Account']
+            outputs['aws_account_id'] = account_id
+        except (json.JSONDecodeError, KeyError):
+            outputs['aws_account_id'] = "N/A"
     
     outputs['aws_region'] = AWS_REGION
     outputs['environment'] = ENVIRONMENT
@@ -426,15 +619,18 @@ def setup_container_repositories():
             print_status(f"ECR repository already exists: {repo}")
         else:
             print_info(f"Creating ECR repository: {repo}")
-            success, _, _ = run_command(
+            success, _, stderr = run_command(
                 f'aws ecr create-repository --repository-name {repo} '
-                f'--image-scanning-configuration scanOnPush=true --region {AWS_REGION}'
+                f'--image-scanning-configuration scanOnPush=true --region {AWS_REGION}',
+                check=False
             )
             
             if success:
                 print_status(f"ECR repository created: {repo}")
             else:
                 print_warning(f"Could not create ECR repository: {repo}")
+                if stderr:
+                    print(f"Error: {stderr}")
     
     return True
 
@@ -445,20 +641,27 @@ def docker_login_ecr():
     # Get account ID
     success, stdout, _ = run_command(
         f'aws sts get-caller-identity --region {AWS_REGION}',
-        capture=True
+        capture=True,
+        check=False
     )
     
-    if not success:
+    if not success or not stdout:
         print_error("Could not get AWS account ID")
         return False
     
-    account_id = json.loads(stdout)['Account']
+    try:
+        account_id = json.loads(stdout)['Account']
+    except (json.JSONDecodeError, KeyError):
+        print_error("Could not parse AWS account ID")
+        return False
+    
     ecr_url = f"{account_id}.dkr.ecr.{AWS_REGION}.amazonaws.com"
     
     # Get login password and login
-    success, _, _ = run_command(
+    success, _, stderr = run_command(
         f'aws ecr get-login-password --region {AWS_REGION} | '
-        f'docker login --username AWS --password-stdin {ecr_url}'
+        f'docker login --username AWS --password-stdin {ecr_url}',
+        check=False
     )
     
     if success:
@@ -466,6 +669,8 @@ def docker_login_ecr():
         return True
     else:
         print_warning("Docker login to ECR failed. You can build images later.")
+        if stderr:
+            print(f"Error: {stderr}")
         return False
 
 def create_deployment_summary():
@@ -512,6 +717,11 @@ docker build -f backend/Dockerfile.prod -t pdf-excel-saas-backend backend/
 docker tag pdf-excel-saas-backend:latest <ECR_BACKEND_URL>:latest
 docker push <ECR_BACKEND_URL>:latest
 ```
+
+## Troubleshooting
+- Environment validation errors: `python scripts/generate-env-vars.py`
+- Manual validation: `python scripts/validate_env.py --env production --file .env.prod`
+- Terraform issues: Check comprehensive documentation at top of scripts/deploy-infrastructure.py
 
 ## Useful Links
 - AWS Console (Sydney): https://ap-southeast-2.console.aws.amazon.com/
@@ -581,6 +791,8 @@ def main():
         sys.exit(1)
     except Exception as e:
         print(f"\n{Colors.RED}❌ Unexpected error: {str(e)}{Colors.END}")
+        import traceback
+        print(f"Full traceback: {traceback.format_exc()}")
         sys.exit(1)
 
 if __name__ == "__main__":
