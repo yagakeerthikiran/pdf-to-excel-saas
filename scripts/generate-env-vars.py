@@ -26,20 +26,20 @@ class Colors:
     END = '\033[0m'
 
 def print_status(msg): 
-    print(f"{Colors.GREEN}✅ {msg}{Colors.END}")
+    print(f"{Colors.GREEN}[SUCCESS] {msg}{Colors.END}")
 
 def print_warning(msg): 
-    print(f"{Colors.YELLOW}⚠️  {msg}{Colors.END}")
+    print(f"{Colors.YELLOW}[WARNING] {msg}{Colors.END}")
 
 def print_error(msg): 
-    print(f"{Colors.RED}❌ {msg}{Colors.END}")
+    print(f"{Colors.RED}[ERROR] {msg}{Colors.END}")
 
 def print_info(msg): 
-    print(f"{Colors.CYAN}ℹ️  {msg}{Colors.END}")
+    print(f"{Colors.CYAN}[INFO] {msg}{Colors.END}")
 
 def print_title(msg):
-    print(f"\n{Colors.BLUE}🚀 {msg}{Colors.END}")
-    print("=" * (len(msg) + 4))
+    print(f"\n{Colors.BLUE}=== {msg} ==={Colors.END}")
+    print("=" * (len(msg) + 8))
 
 def run_command(cmd, capture=True, cwd=None):
     """Run command with error handling"""
@@ -85,7 +85,7 @@ def validate_env_format(key, value):
     if key in patterns:
         pattern_info = patterns[key]
         if not re.match(pattern_info['pattern'], value):
-            errors.append(f"❌ {key}: Invalid format. {pattern_info['desc']}")
+            errors.append(f"ERROR: {key}: Invalid format. {pattern_info['desc']}")
     
     # Check for obvious placeholder values
     placeholder_patterns = [
@@ -99,7 +99,7 @@ def validate_env_format(key, value):
     
     for pattern in placeholder_patterns:
         if re.match(pattern, value, re.IGNORECASE):
-            errors.append(f"⚠️  {key}: Appears to be a placeholder value")
+            errors.append(f"WARNING: {key}: Appears to be a placeholder value")
             break
     
     return errors
@@ -113,7 +113,7 @@ def validate_environment_file(env_file):
         return False
     
     env_vars = {}
-    with open(env_file, 'r') as f:
+    with open(env_file, 'r', encoding='utf-8') as f:
         for line_num, line in enumerate(f, 1):
             line = line.strip()
             if not line or line.startswith('#'):
@@ -132,7 +132,7 @@ def validate_environment_file(env_file):
     all_errors = []
     for key, value in env_vars.items():
         if not value or value.strip() == '':
-            all_errors.append(f"⚠️  {key}: Empty value")
+            all_errors.append(f"WARNING: {key}: Empty value")
             continue
         
         errors = validate_env_format(key, value)
@@ -140,7 +140,7 @@ def validate_environment_file(env_file):
     
     # Print results
     if all_errors:
-        print("\n🚨 VALIDATION ERRORS:")
+        print("\nVALIDATION ERRORS:")
         for error in all_errors:
             print(f"  {error}")
         return False
@@ -320,7 +320,7 @@ def create_env_prod_file(terraform_outputs=None, generated_vars=None):
         return False
     
     # Read template
-    with open('.env.prod.template', 'r') as f:
+    with open('.env.prod.template', 'r', encoding='utf-8') as f:
         template_content = f.read()
     
     # Create updated content
@@ -355,18 +355,18 @@ def create_env_prod_file(terraform_outputs=None, generated_vars=None):
                 updated_content = updated_content.replace('your_32_byte_encryption_key_for_data_protection', value)
     
     # Write to .env.prod
-    with open('.env.prod', 'w') as f:
+    with open('.env.prod', 'w', encoding='utf-8') as f:
         f.write(updated_content)
     
     print_status(".env.prod file created/updated")
     
     # Show what still needs to be filled
     print_info("You still need to configure these services manually:")
-    print("• Supabase: https://supabase.com/ (free tier)")
-    print("• Stripe: https://stripe.com/ (free for testing)")
-    print("• Sentry: https://sentry.io/ (free tier)")
-    print("• PostHog: https://posthog.com/ (free tier)")
-    print("• GitHub Token: GitHub Settings > Developer settings > Personal access tokens")
+    print("* Supabase: https://supabase.com/ (free tier)")
+    print("* Stripe: https://stripe.com/ (free for testing)")
+    print("* Sentry: https://sentry.io/ (free tier)")
+    print("* PostHog: https://posthog.com/ (free tier)")
+    print("* GitHub Token: GitHub Settings > Developer settings > Personal access tokens")
     
     return True
 
@@ -376,8 +376,8 @@ def show_manual_steps():
     
     steps = {
         "GITHUB_TOKEN": [
-            "1. Go to GitHub.com → Settings → Developer settings",
-            "2. Click 'Personal access tokens' → 'Tokens (classic)'",
+            "1. Go to GitHub.com -> Settings -> Developer settings",
+            "2. Click 'Personal access tokens' -> 'Tokens (classic)'",
             "3. Click 'Generate new token (classic)'",
             "4. Select scopes: repo, workflow, write:packages",
             "5. Copy the token (starts with ghp_ or github_pat_)"
@@ -385,14 +385,14 @@ def show_manual_steps():
         "Supabase Variables": [
             "1. Go to https://supabase.com/ and create account",
             "2. Create new project (free tier)",
-            "3. Go to Settings → API",
+            "3. Go to Settings -> API",
             "4. Copy 'URL' for SUPABASE_URL and NEXT_PUBLIC_SUPABASE_URL",
             "5. Copy 'anon public' key for NEXT_PUBLIC_SUPABASE_ANON_KEY",
             "6. Copy 'service_role secret' key for SUPABASE_SERVICE_ROLE_KEY"
         ],
         "Stripe Variables": [
             "1. Go to https://stripe.com/ and create account",
-            "2. Get API keys from Dashboard → Developers → API keys",
+            "2. Get API keys from Dashboard -> Developers -> API keys",
             "3. Copy 'Publishable key' for NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY",
             "4. Copy 'Secret key' for STRIPE_SECRET_KEY",
             "5. Create webhook endpoint for STRIPE_WEBHOOK_SECRET",
@@ -422,57 +422,75 @@ def show_manual_steps():
 def main():
     """Main troubleshooting function"""
     print(f"{Colors.BLUE}")
-    print("🔧 PDF to Excel SaaS - Environment Variable Generator & Troubleshooter")
-    print("======================================================================")
+    print("=== PDF to Excel SaaS - Environment Variable Generator & Troubleshooter ===")
+    print("==========================================================================")
     print(f"{Colors.END}")
     
-    # Step 1: Check directory
-    if not check_current_directory():
-        sys.exit(1)
+    # Set UTF-8 encoding for Windows compatibility
+    if sys.platform.startswith('win'):
+        try:
+            os.system('chcp 65001 >nul 2>&1')
+        except:
+            pass
     
-    # Step 2: Validate existing .env.prod if it exists
-    if os.path.exists('.env.prod'):
-        print_info("Found existing .env.prod file")
-        if validate_environment_file('.env.prod'):
-            print_status("Your .env.prod file looks good! No format issues found.")
-            return
+    try:
+        # Step 1: Check directory
+        if not check_current_directory():
+            sys.exit(1)
+        
+        # Step 2: Validate existing .env.prod if it exists
+        if os.path.exists('.env.prod'):
+            print_info("Found existing .env.prod file")
+            if validate_environment_file('.env.prod'):
+                print_status("Your .env.prod file looks good! No format issues found.")
+                return
+            else:
+                print_warning("Your .env.prod file has some validation issues (shown above)")
+        
+        # Step 3: Check for deployment outputs
+        found_files = check_deployment_outputs()
+        
+        # Step 4: Try to extract Terraform outputs
+        terraform_outputs = extract_terraform_outputs()
+        
+        # Step 5: Check AWS resources manually
+        check_aws_resources()
+        
+        # Step 6: Generate missing environment variables
+        generated_vars = generate_missing_env_vars()
+        
+        # Step 7: Create/update .env.prod
+        create_env_prod_file(terraform_outputs, generated_vars)
+        
+        # Step 8: Show manual steps
+        show_manual_steps()
+        
+        # Final summary
+        print_title("Summary")
+        if terraform_outputs:
+            print_status("Terraform outputs extracted successfully")
         else:
-            print_warning("Your .env.prod file has some validation issues (shown above)")
-    
-    # Step 3: Check for deployment outputs
-    found_files = check_deployment_outputs()
-    
-    # Step 4: Try to extract Terraform outputs
-    terraform_outputs = extract_terraform_outputs()
-    
-    # Step 5: Check AWS resources manually
-    check_aws_resources()
-    
-    # Step 6: Generate missing environment variables
-    generated_vars = generate_missing_env_vars()
-    
-    # Step 7: Create/update .env.prod
-    create_env_prod_file(terraform_outputs, generated_vars)
-    
-    # Step 8: Show manual steps
-    show_manual_steps()
-    
-    # Final summary
-    print_title("Summary")
-    if terraform_outputs:
-        print_status("Terraform outputs extracted successfully")
-    else:
-        print_warning("Terraform outputs not available - may need to run deployment first")
-    
-    print_status("Generated secure keys for BACKEND_API_KEY, JWT_SECRET_KEY, ENCRYPTION_KEY")
-    print_status(".env.prod file created/updated")
-    
-    print(f"\n{Colors.CYAN}📋 Next Steps:{Colors.END}")
-    print("1. Edit .env.prod and replace placeholder values with real service credentials")
-    print("2. Follow the manual steps above to get service API keys")
-    print("3. Run validation: python scripts/validate_env.py --env production --file .env.prod")
-    print("4. Run deployment script: python scripts/deploy-infrastructure.py")
-    print("5. Check infrastructure-outputs.json for final URLs")
+            print_warning("Terraform outputs not available - may need to run deployment first")
+        
+        print_status("Generated secure keys for BACKEND_API_KEY, JWT_SECRET_KEY, ENCRYPTION_KEY")
+        print_status(".env.prod file created/updated")
+        
+        print(f"\n{Colors.CYAN}Next Steps:{Colors.END}")
+        print("1. Edit .env.prod and replace placeholder values with real service credentials")
+        print("2. Follow the manual steps above to get service API keys")
+        print("3. Run validation: python scripts/validate_env.py --env production --file .env.prod")
+        print("4. Run deployment script: python scripts/deploy-infrastructure.py")
+        print("5. Check infrastructure-outputs.json for final URLs")
+        
+    except UnicodeEncodeError as e:
+        print("ERROR: Unicode encoding issue detected.")
+        print("This is a Windows compatibility issue with special characters.")
+        print("Script completed but display had encoding problems.")
+        print(f"Details: {e}")
+    except Exception as e:
+        print(f"ERROR: Unexpected error: {e}")
+        import traceback
+        print(f"Full traceback: {traceback.format_exc()}")
 
 if __name__ == "__main__":
     main()
