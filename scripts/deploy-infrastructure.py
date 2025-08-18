@@ -3,33 +3,10 @@
 Infrastructure Deployment Script - Sydney Region (ap-southeast-2)
 Resume-safe deployment script for PDF to Excel SaaS
 
-===================================================================================
-CRITICAL DOCUMENTATION FOR FUTURE CLAUDE INSTANCES AND DEVELOPERS
-===================================================================================
-
-⚠️  COMMON RECURRING ISSUES AND THEIR SOLUTIONS:
-
-1. TERRAFORM BACKEND MIGRATION ERROR:
-   Error: "Backend configuration changed" / "terraform init" fails
-   Solution: Use "terraform init -migrate-state" or "terraform init -reconfigure"
-   This script handles this automatically in deploy_infrastructure()
-
-2. BACKEND BUCKET DOESN'T EXIST:
-   Error: "bucket does not exist" during terraform init
-   Solution: Script detects this and creates bucket or uses local state
-   Manual fix: Remove infra/backend.tf and re-run script
-
-3. AWS CREDENTIALS ISSUES:
-   Error: terraform init fails with credentials errors
-   Solution: Run 'aws configure' and ensure ap-southeast-2 region
-   Check: aws sts get-caller-identity --region ap-southeast-2
-
-4. ENVIRONMENT VALIDATION ERRORS:
-   Error: "Invalid format" for AWS/GitHub/Stripe keys
-   Problem: env.schema.json has overly strict regex patterns
-   Solution: Update env.schema.json with flexible patterns
-
-===================================================================================
+BUCKET NAMING STRATEGY:
+- Terraform State Bucket: "pdf-excel-saas-tfstate-{account-id}" (backend storage only)
+- Application Bucket: "pdf-excel-saas-prod" (created by Terraform for app use)
+- NO duplicate bucket creation - script only manages Terraform state bucket
 """
 
 import os
@@ -195,42 +172,45 @@ def validate_environment():
     return True
 
 def setup_terraform_backend(account_id):
-    """Setup Terraform backend configuration intelligently"""
+    """Setup Terraform backend - FIXED naming to prevent conflicts"""
     print_title("Setting up Terraform Backend")
     
     # Create infra directory if it doesn't exist
     os.makedirs('infra', exist_ok=True)
     
-    bucket_name = f"{APP_NAME}-terraform-state-{account_id}"
+    # FIXED: Use "tfstate" to distinguish from application bucket
+    state_bucket_name = f"{APP_NAME}-tfstate-{account_id}"
     
-    # Check if bucket exists
-    print_info(f"Checking if state bucket exists: {bucket_name}")
+    print_info(f"Terraform state bucket: {state_bucket_name}")
+    print_info(f"Application bucket: {APP_NAME}-{ENVIRONMENT} (managed by Terraform)")
+    
+    # Check if Terraform state bucket exists
+    print_info(f"Checking Terraform state bucket: {state_bucket_name}")
     success, _, _ = run_command(
-        f'aws s3api head-bucket --bucket {bucket_name} --region {AWS_REGION}',
+        f'aws s3api head-bucket --bucket {state_bucket_name} --region {AWS_REGION}',
         capture=True,
         check=False
     )
     
     if not success:
-        print_warning(f"State bucket doesn't exist: {bucket_name}")
+        print_info(f"Creating Terraform state bucket: {state_bucket_name}")
         
-        # Try to create the bucket
-        print_info("Attempting to create state bucket...")
+        # Create state bucket
         success, _, stderr = run_command(
-            f'aws s3 mb s3://{bucket_name} --region {AWS_REGION}',
+            f'aws s3 mb s3://{state_bucket_name} --region {AWS_REGION}',
             capture=True,
             check=False
         )
         
         if success:
-            print_status(f"Created state bucket: {bucket_name}")
+            print_status(f"Created Terraform state bucket: {state_bucket_name}")
             
-            # Configure bucket
-            print_info("Configuring bucket encryption and versioning...")
+            # Configure bucket for Terraform state
+            print_info("Configuring state bucket...")
             
-            # Enable versioning
+            # Enable versioning (critical for Terraform state)
             run_command(
-                f'aws s3api put-bucket-versioning --bucket {bucket_name} '
+                f'aws s3api put-bucket-versioning --bucket {state_bucket_name} '
                 f'--versioning-configuration Status=Enabled --region {AWS_REGION}',
                 capture=True,
                 check=False
@@ -245,14 +225,13 @@ def setup_terraform_backend(account_id):
                 }]
             }
             
-            # Write to temp file
             temp_file = 'encryption_temp.json'
             try:
                 with open(temp_file, 'w') as f:
                     json.dump(encryption_config, f)
                 
                 run_command(
-                    f'aws s3api put-bucket-encryption --bucket {bucket_name} '
+                    f'aws s3api put-bucket-encryption --bucket {state_bucket_name} '
                     f'--server-side-encryption-configuration file://{temp_file} '
                     f'--region {AWS_REGION}',
                     capture=True,
@@ -260,13 +239,13 @@ def setup_terraform_backend(account_id):
                 )
                 
                 os.remove(temp_file)
-                print_status("Bucket encryption configured")
+                print_status("State bucket encryption configured")
             except Exception as e:
                 print_warning(f"Could not configure bucket encryption: {e}")
         
         else:
-            print_warning("Could not create state bucket. Using local state.")
-            print_info("This means Terraform state will be stored locally (not recommended for production)")
+            print_warning("Could not create Terraform state bucket. Using local state.")
+            print_info("This is acceptable for development but not recommended for production")
             
             # Remove backend configuration to use local state
             backend_file = Path('infra/backend.tf')
@@ -276,10 +255,13 @@ def setup_terraform_backend(account_id):
             
             return True  # Continue with local state
     
-    # Create or update backend configuration
+    else:
+        print_status(f"Terraform state bucket already exists: {state_bucket_name}")
+    
+    # Create backend configuration
     backend_config = f'''terraform {{
   backend "s3" {{
-    bucket         = "{bucket_name}"
+    bucket         = "{state_bucket_name}"
     key            = "terraform.tfstate"
     region         = "{AWS_REGION}"
     encrypt        = true
@@ -293,16 +275,50 @@ def setup_terraform_backend(account_id):
     print_status("Terraform backend configuration created")
     return True
 
+def check_existing_infrastructure(account_id):
+    """Check what infrastructure already exists to avoid conflicts"""
+    print_title("Checking Existing Infrastructure")
+    
+    # Check application bucket (created by Terraform)
+    app_bucket = f"{APP_NAME}-{ENVIRONMENT}"
+    success, _, _ = run_command(
+        f'aws s3api head-bucket --bucket {app_bucket} --region {AWS_REGION}',
+        capture=True,
+        check=False
+    )
+    
+    if success:
+        print_status(f"Application bucket exists: {app_bucket}")
+    else:
+        print_info(f"Application bucket will be created: {app_bucket}")
+    
+    # Check for old/incorrect buckets
+    old_bucket_patterns = [
+        f"{APP_NAME}-terraform-state-{account_id}",  # Old pattern
+        f"{APP_NAME}-terraform-state"  # Very old pattern
+    ]
+    
+    for old_bucket in old_bucket_patterns:
+        success, _, _ = run_command(
+            f'aws s3api head-bucket --bucket {old_bucket} --region {AWS_REGION}',
+            capture=True,
+            check=False
+        )
+        
+        if success:
+            print_warning(f"Found old state bucket: {old_bucket}")
+            print_info("This bucket can be cleaned up after migration to new naming")
+
 def deploy_infrastructure():
-    """Deploy infrastructure with Terraform (ROBUST error handling)"""
+    """Deploy infrastructure with Terraform"""
     print_title("Deploying Infrastructure with Terraform")
     
     if not Path('infra').exists():
         print_error("infra directory not found")
         return False
     
-    # ENHANCED: Multiple strategies for terraform init
-    print_info("Initializing Terraform with comprehensive error handling...")
+    # Enhanced terraform init with comprehensive error handling
+    print_info("Initializing Terraform...")
     
     # Strategy 1: Normal init
     success, stdout, stderr = run_command('terraform init', cwd='infra', check=False)
@@ -321,7 +337,7 @@ def deploy_infrastructure():
                 "region does not match",
                 "backend initialization required"
             ]):
-                print_info("Backend configuration issue detected - reconfiguring...")
+                print_info("Backend configuration issue - reconfiguring...")
                 success, _, _ = run_command('terraform init -reconfigure', cwd='infra', check=False)
             
             # Strategy 3: Migration needed
@@ -391,10 +407,11 @@ def deploy_infrastructure():
             for line in plan_lines:
                 print(line)
         else:
-            print("Plan completed - check for changes")
+            print("Plan completed - review for changes")
     
     # Confirm deployment
     print(f"\n{Colors.YELLOW}[WARNING] This will create AWS resources in Sydney ({AWS_REGION}) that may incur costs.{Colors.END}")
+    print(f"Application bucket that will be created: {APP_NAME}-{ENVIRONMENT}")
     confirm = input("Do you want to proceed with the deployment? (y/N): ")
     
     if confirm.lower() != 'y':
@@ -422,7 +439,7 @@ def capture_terraform_outputs():
     outputs = {}
     output_keys = [
         'alb_dns_name',
-        's3_bucket_name', 
+        's3_bucket_name',  # This should be "pdf-excel-saas-prod"
         'ecr_frontend_url',
         'ecr_backend_url',
         'database_endpoint',
@@ -461,20 +478,30 @@ def capture_terraform_outputs():
     
     print_status("Infrastructure outputs saved")
     
-    # Display key outputs
+    # Display key outputs with correct naming
     print(f"\n{Colors.CYAN}Key Infrastructure Outputs:{Colors.END}")
-    for key in ['alb_dns_name', 's3_bucket_name', 'ecr_frontend_url', 'ecr_backend_url']:
-        if outputs.get(key, 'N/A') != 'N/A':
-            print(f"* {key}: {outputs[key]}")
+    if outputs.get('s3_bucket_name', 'N/A') != 'N/A':
+        print(f"* Application S3 Bucket: {outputs['s3_bucket_name']}")
+    if outputs.get('alb_dns_name', 'N/A') != 'N/A':
+        print(f"* Load Balancer DNS: {outputs['alb_dns_name']}")
+    if outputs.get('ecr_frontend_url', 'N/A') != 'N/A':
+        print(f"* Frontend ECR: {outputs['ecr_frontend_url']}")
+    if outputs.get('ecr_backend_url', 'N/A') != 'N/A':
+        print(f"* Backend ECR: {outputs['ecr_backend_url']}")
 
 def setup_container_repositories():
     """Setup ECR repositories (resume-safe)"""
     print_title("Setting up Container Repositories")
     
-    repositories = ['pdf-excel-saas-frontend', 'pdf-excel-saas-backend']
+    # Note: ECR repositories are already created by Terraform main.tf
+    # This function just validates they exist
+    
+    repositories = [
+        f'{APP_NAME}-frontend',  # Created by Terraform
+        f'{APP_NAME}-backend'    # Created by Terraform
+    ]
     
     for repo in repositories:
-        # Check if repository exists
         success, _, _ = run_command(
             f'aws ecr describe-repositories --repository-names {repo} --region {AWS_REGION}',
             capture=True,
@@ -482,19 +509,10 @@ def setup_container_repositories():
         )
         
         if success:
-            print_status(f"ECR repository already exists: {repo}")
+            print_status(f"ECR repository exists: {repo}")
         else:
-            print_info(f"Creating ECR repository: {repo}")
-            success, _, _ = run_command(
-                f'aws ecr create-repository --repository-name {repo} '
-                f'--image-scanning-configuration scanOnPush=true --region {AWS_REGION}',
-                check=False
-            )
-            
-            if success:
-                print_status(f"ECR repository created: {repo}")
-            else:
-                print_warning(f"Could not create ECR repository: {repo}")
+            print_warning(f"ECR repository not found: {repo}")
+            print_info("ECR repositories should be created by Terraform main.tf")
     
     return True
 
@@ -505,17 +523,28 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 ## Infrastructure Status
 ✅ Infrastructure deployed to Sydney ({AWS_REGION})
-✅ Terraform state configured
+✅ Application S3 bucket: {APP_NAME}-{ENVIRONMENT}
+✅ Terraform state managed separately
 ✅ Container repositories ready
 
+## Bucket Usage
+- **Application Bucket**: `{APP_NAME}-{ENVIRONMENT}` (for PDF uploads/downloads)
+- **Terraform State**: `{APP_NAME}-tfstate-{{account-id}}` (for infrastructure state)
+
 ## Next Steps
-1. Build and push Docker images
-2. Configure environment variables
-3. Test deployment
+1. Build and push Docker images to ECR
+2. Configure environment variables in .env.prod
+3. Test application deployment
+4. Set up monitoring and alerts
+
+## Important Notes
+- Application uses bucket: {APP_NAME}-{ENVIRONMENT}
+- No duplicate buckets should be created
+- ECR repositories are managed by Terraform
 
 ## Troubleshooting
 - Environment issues: `python scripts/generate-env-vars.py`
-- Terraform issues: Check documentation in scripts/deploy-infrastructure.py
+- Check outputs: `cat infrastructure-outputs.json`
 """
     
     with open('deployment-summary.md', 'w') as f:
@@ -529,6 +558,7 @@ def main():
     print("=== PDF to Excel SaaS - Infrastructure Deployment ===")
     print("=====================================================")
     print(f"Region: {AWS_REGION} (Sydney, Australia)")
+    print(f"App Bucket: {APP_NAME}-{ENVIRONMENT}")
     print(f"{Colors.END}")
     
     try:
@@ -540,32 +570,37 @@ def main():
         
         account_id = account_info['Account']
         print_info(f"Using AWS Account: {account_id}")
+        print_info(f"Terraform state bucket: {APP_NAME}-tfstate-{account_id}")
         
         # Step 2: Validate environment
         if not validate_environment():
             print_warning("Environment validation had issues, but continuing...")
         
-        # Step 3: Setup Terraform backend
+        # Step 3: Check existing infrastructure
+        check_existing_infrastructure(account_id)
+        
+        # Step 4: Setup Terraform backend with correct naming
         if not setup_terraform_backend(account_id):
             print_error("Terraform backend setup failed")
             sys.exit(1)
         
-        # Step 4: Deploy infrastructure
+        # Step 5: Deploy infrastructure
         if not deploy_infrastructure():
             print_error("Infrastructure deployment failed")
             sys.exit(1)
         
-        # Step 5: Setup container repositories
+        # Step 6: Validate container repositories
         setup_container_repositories()
         
-        # Step 6: Create summary
+        # Step 7: Create summary
         create_deployment_summary()
         
         print(f"\n{Colors.GREEN}[SUCCESS] Infrastructure deployment completed!{Colors.END}")
         print(f"\n{Colors.CYAN}Next Steps:{Colors.END}")
-        print("1. Check infrastructure-outputs.json for deployment details")
-        print("2. Build and push Docker images")
-        print("3. Configure your application")
+        print(f"1. Application will use S3 bucket: {APP_NAME}-{ENVIRONMENT}")
+        print("2. Check infrastructure-outputs.json for all details")
+        print("3. Build and push Docker images to ECR")
+        print("4. Configure your application environment")
         
     except KeyboardInterrupt:
         print(f"\n{Colors.YELLOW}[WARNING] Deployment interrupted by user{Colors.END}")
