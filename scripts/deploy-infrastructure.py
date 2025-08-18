@@ -258,19 +258,32 @@ def setup_terraform_backend(bucket_name):
     return True
 
 def deploy_infrastructure():
-    """Deploy infrastructure with Terraform (resume-safe)"""
+    """Deploy infrastructure with Terraform (resume-safe with backend migration handling)"""
     print_title("Deploying Infrastructure with Terraform")
     
     if not Path('infra').exists():
         print_error("infra directory not found")
         return False
     
-    # Initialize Terraform
+    # Initialize Terraform with migration handling
     print_info("Initializing Terraform...")
-    success, _, _ = run_command('terraform init', cwd='infra')
+    
+    # Try normal init first
+    success, _, stderr = run_command('terraform init', cwd='infra', check=False)
+    
+    if not success and "Backend configuration changed" in stderr:
+        print_warning("Backend configuration changed, attempting migration...")
+        success, _, _ = run_command('terraform init -migrate-state', cwd='infra', check=False)
+        
+        if not success:
+            print_warning("Migration failed, reconfiguring backend...")
+            success, _, _ = run_command('terraform init -reconfigure', cwd='infra')
+    
     if not success:
         print_error("Terraform init failed")
         return False
+    
+    print_status("Terraform initialized successfully")
     
     # Plan deployment
     print_info("Planning infrastructure deployment...")
@@ -334,6 +347,7 @@ def capture_terraform_outputs():
         'ecr_frontend_url',
         'ecr_backend_url',
         'database_endpoint',
+        'database_url',
         'vpc_id',
         'ecs_cluster_name'
     ]
@@ -366,8 +380,9 @@ def capture_terraform_outputs():
     outputs['app_name'] = APP_NAME
     outputs['deployment_time'] = datetime.now().isoformat()
     
-    # Save to file
-    with open('infrastructure-outputs.json', 'w') as f:
+    # Save to file in project root
+    output_file = 'infrastructure-outputs.json'
+    with open(output_file, 'w') as f:
         json.dump(outputs, f, indent=2)
     
     # Also save as env format
@@ -376,10 +391,11 @@ def capture_terraform_outputs():
         env_key = key.upper()
         env_content.append(f"{env_key}={value}")
     
-    with open('infrastructure-outputs.env', 'w') as f:
+    env_file = 'infrastructure-outputs.env'
+    with open(env_file, 'w') as f:
         f.write('\n'.join(env_content))
     
-    print_status("Infrastructure outputs saved to infrastructure-outputs.json and .env")
+    print_status(f"Infrastructure outputs saved to {output_file} and {env_file}")
     
     # Display key outputs
     print(f"\n{Colors.CYAN}📊 Key Infrastructure Outputs:{Colors.END}")
@@ -469,6 +485,12 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 ✅ CloudWatch logging
 ✅ Security groups and IAM roles
 
+## Output Files Created
+- **infrastructure-outputs.json**: All Terraform outputs in JSON format
+- **infrastructure-outputs.env**: Environment variables format
+- **deployment-summary.md**: This summary file
+- **.env.prod**: Production environment configuration (if created)
+
 ## Next Steps
 □ Build and push Docker images
 □ Update GitHub secrets for CI/CD
@@ -477,11 +499,6 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 □ Test application deployment
 □ Configure monitoring alerts
 □ Run security audit
-
-## Important Files
-- infrastructure-outputs.json: All Terraform outputs
-- infrastructure-outputs.env: Environment variables format
-- .env.prod: Production environment configuration
 
 ## Commands to Build Images
 ```bash
@@ -501,10 +518,11 @@ docker push <ECR_BACKEND_URL>:latest
 - GitHub Repository: https://github.com/yagakeerthikiran/pdf-to-excel-saas
 """
     
-    with open('deployment-summary.md', 'w') as f:
+    summary_file = 'deployment-summary.md'
+    with open(summary_file, 'w') as f:
         f.write(summary)
     
-    print_status("Deployment summary saved to deployment-summary.md")
+    print_status(f"Deployment summary saved to {summary_file}")
 
 def main():
     """Main deployment function"""
@@ -553,9 +571,10 @@ def main():
         print(f"\n{Colors.GREEN}🎉 Infrastructure deployment completed successfully!{Colors.END}")
         print(f"\n{Colors.CYAN}📋 Next Steps:{Colors.END}")
         print("1. Check deployment-summary.md for detailed next steps")
-        print("2. Build and push Docker images to ECR")
-        print("3. Configure GitHub secrets for CI/CD")
-        print("4. Test your application endpoints")
+        print("2. Check infrastructure-outputs.json for all deployment details")
+        print("3. Build and push Docker images to ECR")
+        print("4. Configure GitHub secrets for CI/CD")
+        print("5. Test your application endpoints")
         
     except KeyboardInterrupt:
         print(f"\n{Colors.YELLOW}⚠️  Deployment interrupted by user{Colors.END}")
