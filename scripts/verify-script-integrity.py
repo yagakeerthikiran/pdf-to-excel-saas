@@ -20,20 +20,20 @@ from pathlib import Path
 # Required imports for each script to function properly
 REQUIRED_IMPORTS = {
     'destroy-infrastructure.py': [
-        'subprocess', 'json', 'sys', 'time', 'pathlib.Path'
+        'subprocess', 'json', 'sys', 'time', 'Path'
     ],
     'deploy-infrastructure.py': [
-        'subprocess', 'json', 'sys', 'time', 'boto3', 'pathlib.Path', 
-        'typing.Dict', 'typing.List', 'dataclasses.dataclass'
+        'subprocess', 'json', 'sys', 'time', 'boto3', 'Path', 
+        'Dict', 'List', 'dataclass'
     ],
     'validate_env.py': [
-        'subprocess', 'json', 'sys', 'pathlib.Path'
+        'subprocess', 'json', 'sys', 'Path'
     ],
     'generate-env-vars.py': [
-        'subprocess', 'json', 'sys', 'pathlib.Path'
+        'subprocess', 'json', 'sys', 'Path'
     ],
     'diagnose-infrastructure.py': [
-        'subprocess', 'json', 'sys', 'pathlib.Path'
+        'subprocess', 'json', 'sys', 'Path'
     ]
 }
 
@@ -45,7 +45,7 @@ FUNCTION_IMPORT_DEPENDENCIES = {
     'boto3.Session()': 'boto3',
     'boto3.client()': 'boto3',
     'session.client()': 'boto3',
-    'Path(': 'pathlib.Path',
+    'Path(': 'Path',
     'subprocess.run(': 'subprocess',
     'json.loads(': 'json',
     'json.dumps(': 'json'
@@ -86,10 +86,8 @@ def extract_imports_from_ast(script_path):
             elif isinstance(node, ast.ImportFrom):
                 module = node.module or ''
                 for alias in node.names:
-                    if module:
-                        imports.add(f"{module}.{alias.name}")
-                    else:
-                        imports.add(alias.name)
+                    # For "from pathlib import Path", add "Path" not "pathlib.Path"
+                    imports.add(alias.name)
         
         return imports, content
     except Exception as e:
@@ -101,8 +99,18 @@ def check_function_usage(content, script_name):
     
     for func_usage, required_import in FUNCTION_IMPORT_DEPENDENCIES.items():
         if func_usage in content:
-            # Check if the required import exists
-            if required_import not in content:
+            # Check if the required import exists in content
+            # Handle both "import time" and "from X import time" patterns
+            import_patterns = [
+                f"import {required_import}",
+                f"from pathlib import {required_import}",  # Special case for Path
+                f"from typing import {required_import}",   # Special case for typing
+                f"from dataclasses import {required_import}"  # Special case for dataclasses
+            ]
+            
+            found = any(pattern in content for pattern in import_patterns)
+            
+            if not found:
                 issues.append(f"Uses {func_usage} but missing import: {required_import}")
     
     return issues
@@ -123,14 +131,7 @@ def verify_script_integrity(script_path, script_name):
     # Check for missing required imports
     missing_imports = []
     for req in required:
-        # Handle both direct imports and module.name imports
-        if '.' in req:
-            module, name = req.rsplit('.', 1)
-            found = any(imp.endswith(f".{name}") or imp == req for imp in imports)
-        else:
-            found = req in imports
-            
-        if not found:
+        if req not in imports:
             missing_imports.append(req)
     
     if missing_imports:
@@ -151,7 +152,7 @@ def generate_fix_suggestions(script_name, errors):
             suggestions.append(f"Add 'import time' to the top of {script_name}")
         elif 'boto3' in error.lower():
             suggestions.append(f"Add 'import boto3' to {script_name} and run 'pip install boto3'")
-        elif 'pathlib' in error.lower():
+        elif 'path' in error.lower():
             suggestions.append(f"Add 'from pathlib import Path' to {script_name}")
         elif 'subprocess' in error.lower():
             suggestions.append(f"Add 'import subprocess' to {script_name}")
