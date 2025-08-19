@@ -10,6 +10,7 @@ Safe AWS Infrastructure Destroy Script
 import subprocess
 import json
 import sys
+import time
 from pathlib import Path
 
 AWS_REGION = "ap-southeast-2"
@@ -333,7 +334,6 @@ def main():
     
     # Create RDS snapshot for medium/full destroy
     if mode in ["medium", "full"]:
-        import time
         create_rds_snapshot()
     
     # Remove lifecycle protection
