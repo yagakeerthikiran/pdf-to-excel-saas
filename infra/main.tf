@@ -246,6 +246,10 @@ resource "aws_security_group" "rds" {
 resource "aws_s3_bucket" "main" {
   bucket = "${var.app_name}-${var.environment}"
 
+  lifecycle {
+    prevent_destroy = true
+  }
+
   tags = {
     Name        = "${var.app_name}-${var.environment}"
     Environment = var.environment
@@ -286,6 +290,10 @@ resource "aws_db_subnet_group" "main" {
   name       = "${var.app_name}-${var.environment}-db-subnet-group"
   subnet_ids = aws_subnet.private[*].id
 
+  lifecycle {
+    prevent_destroy = true
+  }
+
   tags = {
     Name        = "${var.app_name}-${var.environment}-db-subnet-group"
     Environment = var.environment
@@ -318,6 +326,10 @@ resource "aws_db_instance" "main" {
 
   skip_final_snapshot = true
   deletion_protection = false
+
+  lifecycle {
+    prevent_destroy = true
+  }
 
   tags = {
     Name        = "${var.app_name}-${var.environment}-db"
@@ -366,6 +378,10 @@ resource "aws_ecs_cluster" "main" {
     value = "enabled"
   }
 
+  lifecycle {
+    prevent_destroy = true
+  }
+
   tags = {
     Name        = "${var.app_name}-${var.environment}"
     Environment = var.environment
@@ -381,6 +397,10 @@ resource "aws_lb" "main" {
   subnets            = aws_subnet.public[*].id
 
   enable_deletion_protection = false
+
+  lifecycle {
+    prevent_destroy = true
+  }
 
   tags = {
     Name        = "${var.app_name}-${var.environment}-alb"
@@ -407,6 +427,10 @@ resource "aws_lb_target_group" "frontend" {
     unhealthy_threshold = 2
   }
 
+  lifecycle {
+    prevent_destroy = true
+  }
+
   tags = {
     Name        = "${var.app_name}-${var.environment}-frontend-tg"
     Environment = var.environment
@@ -429,6 +453,10 @@ resource "aws_lb_target_group" "backend" {
     protocol            = "HTTP"
     timeout             = 5
     unhealthy_threshold = 2
+  }
+
+  lifecycle {
+    prevent_destroy = true
   }
 
   tags = {
