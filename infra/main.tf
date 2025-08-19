@@ -410,10 +410,11 @@ resource "aws_lb" "main" {
 
 # Target Groups
 resource "aws_lb_target_group" "frontend" {
-  name     = "${var.app_name}-${var.environment}-frontend-tg"
-  port     = 3000
-  protocol = "HTTP"
-  vpc_id   = aws_vpc.main.id
+  name        = "${var.app_name}-${var.environment}-frontend-tg"
+  port        = 3000
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "instance"
 
   health_check {
     enabled             = true
@@ -438,10 +439,11 @@ resource "aws_lb_target_group" "frontend" {
 }
 
 resource "aws_lb_target_group" "backend" {
-  name     = "${var.app_name}-${var.environment}-backend-tg"
-  port     = 8000
-  protocol = "HTTP"
-  vpc_id   = aws_vpc.main.id
+  name        = "${var.app_name}-${var.environment}-backend-tg"
+  port        = 8000
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "instance"
 
   health_check {
     enabled             = true
