@@ -337,9 +337,12 @@ resource "aws_db_instance" "main" {
   }
 }
 
+# Fixed RDS password generation - exclude problematic characters
 resource "random_password" "db_password" {
   length  = 32
   special = true
+  # Exclude characters that RDS doesn't allow: / @ " ' \ space
+  override_special = "!#$%&*()-_=+[]{}<>:?"
 }
 
 # ECR Repositories
@@ -408,13 +411,13 @@ resource "aws_lb" "main" {
   }
 }
 
-# Target Groups
+# Target Groups - Fixed for Fargate compatibility
 resource "aws_lb_target_group" "frontend" {
   name        = "${var.app_name}-${var.environment}-frontend-tg"
   port        = 3000
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
-  target_type = "instance"
+  target_type = "ip"  # Changed from "instance" to "ip" for Fargate compatibility
 
   health_check {
     enabled             = true
@@ -443,7 +446,7 @@ resource "aws_lb_target_group" "backend" {
   port        = 8000
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
-  target_type = "instance"
+  target_type = "ip"  # Changed from "instance" to "ip" for Fargate compatibility
 
   health_check {
     enabled             = true
