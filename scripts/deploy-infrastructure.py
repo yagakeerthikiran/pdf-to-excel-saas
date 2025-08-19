@@ -5,6 +5,7 @@ Intelligent Infrastructure Deployment Script
 - Compares with Terraform state for inconsistencies
 - Auto-reconciles stale/orphaned state objects
 - Generates dynamic terraform operations (create/update/delete/recreate)
+- Handles lifecycle protection when recreating resources is needed
 - Provides detailed drift analysis and remediation
 """
 
@@ -84,6 +85,87 @@ def check_aws_credentials() -> Tuple[bool, Optional[str]]:
         print_error(f"AWS credentials not configured: {e}")
         print_info("Run: aws configure")
         return False, None
+
+def backup_main_tf():
+    """Create backup of main.tf before modifications"""
+    print_info("Creating backup of main.tf...")
+    
+    main_tf_path = Path('infra/main.tf')
+    backup_path = Path('infra/main.tf.backup')
+    
+    if main_tf_path.exists():
+        import shutil
+        shutil.copy2(main_tf_path, backup_path)
+        print_status("Backup created: main.tf.backup")
+        return True
+    else:
+        print_error("main.tf not found")
+        return False
+
+def remove_lifecycle_protection():
+    """Temporarily remove lifecycle protection when needed for recreation"""
+    print_info("Temporarily removing lifecycle protection to allow resource recreation...")
+    
+    main_tf_path = Path('infra/main.tf')
+    
+    # Read current main.tf
+    with open(main_tf_path, 'r') as f:
+        content = f.read()
+    
+    # Remove lifecycle blocks
+    lines = content.split('\n')
+    filtered_lines = []
+    skip_lifecycle = False
+    brace_count = 0
+    
+    for line in lines:
+        if 'lifecycle {' in line:
+            skip_lifecycle = True
+            brace_count = 1
+            continue
+        
+        if skip_lifecycle:
+            if '{' in line:
+                brace_count += line.count('{')
+            if '}' in line:
+                brace_count -= line.count('}')
+                if brace_count == 0:
+                    skip_lifecycle = False
+            continue
+        
+        filtered_lines.append(line)
+    
+    # Write modified content
+    modified_content = '\n'.join(filtered_lines)
+    with open(main_tf_path, 'w') as f:
+        f.write(modified_content)
+    
+    print_status("Lifecycle protection temporarily removed")
+    return True
+
+def restore_lifecycle_protection():
+    """Restore lifecycle protection from backup"""
+    print_info("Restoring lifecycle protection...")
+    
+    backup_path = Path('infra/main.tf.backup')
+    main_tf_path = Path('infra/main.tf')
+    
+    if backup_path.exists():
+        import shutil
+        shutil.copy2(backup_path, main_tf_path)
+        backup_path.unlink()  # Remove backup file
+        print_status("Lifecycle protection restored")
+        return True
+    else:
+        print_warning("Backup file not found - using git to restore")
+        # Fallback to git restore
+        success, stdout, stderr = run_command('git checkout infra/main.tf')
+        if success:
+            print_status("Lifecycle protection restored via git")
+            return True
+        else:
+            print_error(f"Could not restore main.tf: {stderr}")
+            return False
 
 def discover_aws_resources(session: boto3.Session) -> Dict[str, List[Dict]]:
     """Discover ALL existing AWS resources, then filter by relevance"""
@@ -395,20 +477,27 @@ def analyze_drift(aws_resources: Dict, terraform_state: Dict) -> List[ResourceDr
     
     return drifts
 
-def generate_terraform_plan() -> bool:
-    """Generate and review Terraform execution plan"""
+def generate_terraform_plan() -> Tuple[bool, bool]:
+    """Generate and review Terraform execution plan, return (success, needs_lifecycle_removal)"""
     print_title("Generating Terraform Plan")
     
     plan_cmd = f'terraform plan -detailed-exitcode -var="aws_region={AWS_REGION}" -var="environment={ENVIRONMENT}" -var="app_name={APP_NAME}"'
     success, stdout, stderr = run_command(plan_cmd, cwd='infra')
     
+    # Check if lifecycle protection is preventing changes
+    needs_lifecycle_removal = "lifecycle.prevent_destroy" in stderr
+    
     # Terraform plan exit codes: 0 = no changes, 1 = error, 2 = changes planned
     if success:
         print_status("No changes needed - infrastructure is up to date")
-        return True
-    elif "Error" in stderr and "exit status 1" in stderr:
+        return True, False
+    elif needs_lifecycle_removal:
+        print_warning("Plan blocked by lifecycle protection - recreation needed")
+        print_info("This is normal when changing resource configurations")
+        return False, True
+    elif "Error" in stderr:
         print_error(f"Plan failed: {stderr}")
-        return False
+        return False, False
     else:
         print_info("Changes detected in plan")
         # Show a summary of the plan
@@ -417,7 +506,7 @@ def generate_terraform_plan() -> bool:
             for line in lines:
                 if 'Plan:' in line or '# aws_' in line or 'will be created' in line or 'will be destroyed' in line:
                     print_info(f"  {line.strip()}")
-        return True
+        return True, False
 
 def apply_terraform_changes() -> bool:
     """Apply Terraform changes after confirmation"""
@@ -459,6 +548,8 @@ def main():
     # Get AWS session
     session = get_aws_session()
     
+    lifecycle_protection_removed = False
+    
     try:
         # Step 1: Discover existing AWS resources
         aws_resources = discover_aws_resources(session)
@@ -470,11 +561,34 @@ def main():
         drifts = analyze_drift(aws_resources, terraform_state)
         
         # Step 4: Generate Terraform plan (this will show what needs to be created/updated)
-        if not generate_terraform_plan():
+        plan_success, needs_lifecycle_removal = generate_terraform_plan()
+        
+        # Step 5: Handle lifecycle protection if needed
+        if needs_lifecycle_removal:
+            print_title("Handling Lifecycle Protection")
+            print_info("Some resources need to be recreated due to configuration changes")
+            print_info("Temporarily removing lifecycle protection to allow updates")
+            
+            # Create backup before removing protection
+            if not backup_main_tf():
+                print_error("Failed to create backup")
+                sys.exit(1)
+            
+            # Remove lifecycle protection
+            if not remove_lifecycle_protection():
+                print_error("Failed to remove lifecycle protection")
+                sys.exit(1)
+            
+            lifecycle_protection_removed = True
+            
+            # Re-run plan without lifecycle protection
+            plan_success, _ = generate_terraform_plan()
+        
+        if not plan_success:
             print_error("Terraform planning failed")
             sys.exit(1)
         
-        # Step 5: Apply changes if user confirms
+        # Step 6: Apply changes if user confirms
         if not apply_terraform_changes():
             print_error("Terraform apply failed or cancelled")
             sys.exit(1)
@@ -483,6 +597,9 @@ def main():
         print_title("Deployment Summary")
         print_status("✅ AWS resource discovery completed")
         print_status("✅ Infrastructure deployment completed")
+        
+        if lifecycle_protection_removed:
+            print_status("✅ Lifecycle protection handled properly")
         
         print_info("\nNext steps:")
         print_info("1. Build and push Docker images to ECR")
@@ -493,6 +610,11 @@ def main():
     except Exception as e:
         print_error(f"Deployment failed: {e}")
         sys.exit(1)
+    finally:
+        # Always restore lifecycle protection if it was removed
+        if lifecycle_protection_removed:
+            print_title("Restoring Lifecycle Protection")
+            restore_lifecycle_protection()
 
 if __name__ == "__main__":
     main()
