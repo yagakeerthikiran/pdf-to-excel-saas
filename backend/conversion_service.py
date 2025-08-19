@@ -2,17 +2,30 @@ import pdfplumber
 import openpyxl
 from openpyxl.utils import get_column_letter
 import structlog
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import backend.ocr_service as ocr_service
 
 logger = structlog.get_logger(__name__)
 
 Element = Dict[str, Any]
 
-def parse_textract_blocks(textract_json: dict, page_width: float, page_height: float) -> List[Element]:
+def parse_textract_blocks(textract_json: Optional[dict], page_width: float, page_height: float) -> List[Element]:
     """
     Parses the Textract JSON response and converts it into our Element format.
+
+    Args:
+        textract_json: Parsed JSON returned by AWS Textract. Some callers may
+            provide ``None`` if OCR failed or was skipped.
+        page_width: Width of the PDF page in points.
+        page_height: Height of the PDF page in points.
+
+    Returns:
+        A list of element dictionaries describing the words detected on the
+        page. Returns an empty list when ``textract_json`` is ``None``.
     """
+    if not textract_json:
+        return []
+
     elements = []
     for block in textract_json.get("Blocks", []):
         if block["BlockType"] == "WORD":

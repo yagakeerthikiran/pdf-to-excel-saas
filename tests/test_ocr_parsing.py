@@ -88,3 +88,10 @@ def test_build_grid_from_elements():
     assert grid[1][1] == "Coffee Shop"
 
     assert grid == expected_grid
+
+
+def test_parse_textract_blocks_with_none():
+    """parse_textract_blocks should gracefully handle None input."""
+    # When textract_json is None, the function should simply return an empty list
+    elements = parse_textract_blocks(None, 1000, 800)
+    assert elements == []
