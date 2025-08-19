@@ -1,29 +1,25 @@
 #!/usr/bin/env python3
 """
-TRULY RESUME-SAFE Infrastructure Deployment with PROPER AWS RESOURCE IMPORTS
-- Fixed: Use correct AWS resource identifiers (ARNs/IDs) for Terraform imports
-- Enhanced: Fetch actual AWS resource identifiers before import attempts
-- Logic: Import failure doesn't mean resource needs creation - verify existence independently
+TRULY RESUME-SAFE Infrastructure Deployment with STATE CLEANUP & RE-IMPORT
+- Fixed: Handle "Resource already managed by Terraform" errors
+- Enhanced: Remove stale state entries before re-importing
+- Logic: Always check AWS reality first, clean state, then import properly
 
 DOCUMENTED ISSUES & FIXES:
 =========================
-ISSUE: Terraform import failed with "not a valid ARN" errors for ALB/Target Groups
-CAUSE: Using resource names instead of required ARNs for Terraform import
-FIX: Fetch actual ARNs using AWS CLI queries before import, handle import failures gracefully
+ISSUE: "Resource already managed by Terraform" error during import
+CAUSE: Terraform state contains stale/corrupted entries that don't match AWS reality
+FIX: Remove stale state entries with "terraform state rm", then re-import with correct identifiers
 
-ISSUE: Import failures causing script to assume resources need creation
-CAUSE: Wrong logic - import failure doesn't mean resource doesn't exist
-FIX: Separate existence checking from import attempts, only create truly missing resources
+ISSUE: Import failures due to state corruption/mismatch
+CAUSE: Terraform state file doesn't accurately reflect AWS resource state
+FIX: Clean slate approach - remove from state, verify AWS existence, re-import properly
 
-TERRAFORM IMPORT REQUIREMENTS:
-- Load Balancer: Requires full ARN (not name)
-- Target Groups: Requires full ARN (not name)  
-- IAM Roles: Can use role name
-- RDS Subnet Group: Can use name
-- S3 Bucket: Uses bucket name
-- RDS Instance: Uses DB instance identifier
-- ECS Cluster: Uses cluster name
-- ECR Repository: Uses repository name
+STATE MANAGEMENT STRATEGY:
+1. Check AWS resources directly (source of truth)
+2. Remove any stale Terraform state entries
+3. Re-import with correct AWS identifiers
+4. Only create truly missing resources
 """
 
 import os
@@ -79,6 +75,31 @@ def run_aws_command(cmd, timeout=30):
     except Exception as e:
         return False, str(e)
 
+def run_terraform_command(cmd, cwd='infra'):
+    """Run Terraform command with error handling"""
+    try:
+        result = subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True, text=True)
+        return result.returncode == 0, result.stdout, result.stderr
+    except Exception as e:
+        return False, "", str(e)
+
+def remove_from_terraform_state(terraform_resource):
+    """Remove resource from Terraform state (not from AWS)"""
+    print_info(f"Removing stale state entry: {terraform_resource}")
+    
+    success, stdout, stderr = run_terraform_command(f'terraform state rm {terraform_resource}')
+    
+    if success:
+        print_status(f"Removed from state: {terraform_resource}")
+        return True
+    else:
+        if "No matching resource instances found" in stderr:
+            print_info(f"Resource not in state: {terraform_resource}")
+            return True
+        else:
+            print_warning(f"Failed to remove from state: {stderr}")
+            return False
+
 def get_load_balancer_arn(lb_name):
     """Get Load Balancer ARN from name"""
     cmd = f'aws elbv2 describe-load-balancers --names {lb_name} --query "LoadBalancers[0].LoadBalancerArn" --output text --region {AWS_REGION}'
@@ -112,7 +133,7 @@ def check_and_get_resource_details():
         resources['db_subnet_group'] = {
             'exists': True,
             'name': db_subnet_group_name,
-            'import_id': db_subnet_group_name,  # RDS subnet groups use name
+            'import_id': db_subnet_group_name,
             'terraform_resource': 'aws_db_subnet_group.main'
         }
         print_status(f"DB Subnet Group exists: {db_subnet_group_name}")
@@ -128,7 +149,7 @@ def check_and_get_resource_details():
         resources['load_balancer'] = {
             'exists': True,
             'name': lb_name,
-            'import_id': lb_arn,  # Load balancers need ARN
+            'import_id': lb_arn,
             'terraform_resource': 'aws_lb.main'
         }
         print_status(f"Load Balancer exists: {lb_name}")
@@ -146,7 +167,7 @@ def check_and_get_resource_details():
             resources[f'target_group_{tg_type}'] = {
                 'exists': True,
                 'name': tg_name,
-                'import_id': tg_arn,  # Target groups need ARN
+                'import_id': tg_arn,
                 'terraform_resource': f'aws_lb_target_group.{tg_type}'
             }
             print_status(f"Target Group {tg_type} exists: {tg_name}")
@@ -165,7 +186,7 @@ def check_and_get_resource_details():
             resources[f'iam_role_{role_type}'] = {
                 'exists': True,
                 'name': role_name,
-                'import_id': role_name,  # IAM roles use name
+                'import_id': role_name,
                 'terraform_resource': f'aws_iam_role.ecs_task_{role_type}_role'
             }
             print_status(f"IAM Role {role_type} exists: {role_name}")
@@ -182,7 +203,7 @@ def check_and_get_resource_details():
         resources['s3_bucket'] = {
             'exists': True,
             'name': s3_bucket_name,
-            'import_id': s3_bucket_name,  # S3 buckets use name
+            'import_id': s3_bucket_name,
             'terraform_resource': 'aws_s3_bucket.main'
         }
         print_status(f"S3 Bucket exists: {s3_bucket_name}")
@@ -199,7 +220,7 @@ def check_and_get_resource_details():
         resources['rds_instance'] = {
             'exists': True,
             'name': rds_name,
-            'import_id': rds_name,  # RDS instances use identifier
+            'import_id': rds_name,
             'terraform_resource': 'aws_db_instance.main'
         }
         print_status(f"RDS Instance exists: {rds_name}")
@@ -218,7 +239,7 @@ def check_and_get_resource_details():
             resources['ecs_cluster'] = {
                 'exists': True,
                 'name': ecs_name,
-                'import_id': ecs_name,  # ECS clusters use name
+                'import_id': ecs_name,
                 'terraform_resource': 'aws_ecs_cluster.main'
             }
             print_status(f"ECS Cluster exists: {ecs_name}")
@@ -239,7 +260,7 @@ def check_and_get_resource_details():
             resources[f'ecr_{repo_type}'] = {
                 'exists': True,
                 'name': repo_name,
-                'import_id': repo_name,  # ECR repos use name
+                'import_id': repo_name,
                 'terraform_resource': f'aws_ecr_repository.{repo_type}'
             }
             print_status(f"ECR Repository {repo_type} exists: {repo_name}")
@@ -249,9 +270,9 @@ def check_and_get_resource_details():
     
     return resources
 
-def import_existing_resources(resources):
-    """Import existing resources into Terraform state using correct identifiers"""
-    print_title("Importing Existing Resources into Terraform State")
+def clean_and_import_resources(resources):
+    """Clean stale state entries and re-import existing resources properly"""
+    print_title("Cleaning State and Re-importing Existing Resources")
     
     existing_resources = {k: v for k, v in resources.items() if v.get('exists')}
     
@@ -259,47 +280,56 @@ def import_existing_resources(resources):
         print_info("No existing resources to import")
         return True
     
-    print_info(f"Found {len(existing_resources)} existing resources to import")
-    
-    import_results = {}
+    print_info(f"Found {len(existing_resources)} existing resources to clean and re-import")
     
     for resource_key, resource_info in existing_resources.items():
         terraform_resource = resource_info['terraform_resource']
         import_id = resource_info['import_id']
         resource_name = resource_info['name']
         
-        print_info(f"Importing {resource_name}...")
-        print_info(f"  Terraform resource: {terraform_resource}")
-        print_info(f"  Import ID: {import_id}")
+        print_info(f"Processing {resource_name}...")
+        
+        # Step 1: Remove from Terraform state (clean slate)
+        print_info(f"  Removing stale state entry for {terraform_resource}")
+        remove_from_terraform_state(terraform_resource)
+        
+        # Step 2: Re-import with correct identifier
+        print_info(f"  Re-importing with ID: {import_id}")
         
         import_cmd = f'terraform import {terraform_resource} {import_id}'
-        result = subprocess.run(import_cmd, shell=True, cwd='infra', 
-                              capture_output=True, text=True)
+        success, stdout, stderr = run_terraform_command(import_cmd)
         
-        if result.returncode == 0:
+        if success:
             print_status(f"✅ Successfully imported: {resource_name}")
-            import_results[resource_key] = True
         else:
-            print_warning(f"⚠️ Import failed for {resource_name}")
-            print_warning(f"   Error: {result.stderr}")
+            print_error(f"❌ Import failed for {resource_name}")
+            print_error(f"   Error: {stderr}")
             
-            # IMPORTANT: Import failure doesn't mean resource doesn't exist!
-            # The resource exists in AWS, just not in Terraform state
-            if "already exists" in result.stderr or "Resource already managed" in result.stderr:
-                print_info(f"   Resource {resource_name} already in Terraform state")
-                import_results[resource_key] = True
+            # Handle specific error cases
+            if "Resource already managed" in stderr:
+                print_warning(f"   State cleanup may be incomplete for {resource_name}")
+                print_info(f"   Trying state removal again...")
+                
+                # Try removing again and re-import
+                remove_from_terraform_state(terraform_resource)
+                success_retry, stdout_retry, stderr_retry = run_terraform_command(import_cmd)
+                
+                if success_retry:
+                    print_status(f"✅ Successfully imported on retry: {resource_name}")
+                else:
+                    print_error(f"❌ Import still failed: {stderr_retry}")
+            
+            elif "does not exist" in stderr or "not found" in stderr:
+                print_warning(f"   AWS resource {resource_name} may have been deleted")
+                print_info(f"   Will be created in deployment")
             else:
-                print_info(f"   Resource {resource_name} exists in AWS but import failed")
-                import_results[resource_key] = False
-    
-    successful_imports = sum(1 for success in import_results.values() if success)
-    print_status(f"Import summary: {successful_imports}/{len(existing_resources)} successful")
+                print_warning(f"   Unexpected import error for {resource_name}")
     
     return True
 
 def run_terraform_deployment(resources):
-    """Run Terraform deployment only for truly missing resources"""
-    print_title("Running Terraform Deployment")
+    """Run Terraform deployment with clean state management"""
+    print_title("Running Terraform Deployment with Clean State")
     
     existing_resources = {k: v for k, v in resources.items() if v.get('exists')}
     missing_resources = {k: v for k, v in resources.items() if not v.get('exists')}
@@ -307,53 +337,47 @@ def run_terraform_deployment(resources):
     print_info(f"Existing resources: {len(existing_resources)}")
     print_info(f"Missing resources: {len(missing_resources)}")
     
-    if missing_resources:
-        print_info("Missing resources that will be created:")
-        for key, resource in missing_resources.items():
-            print(f"  ❌ {key}: {resource['name']}")
-    
     # Initialize Terraform
     print_info("Initializing Terraform...")
-    result = subprocess.run('terraform init -reconfigure', shell=True, cwd='infra',
-                          capture_output=True, text=True)
+    success, stdout, stderr = run_terraform_command('terraform init -reconfigure')
     
-    if result.returncode != 0:
+    if not success:
         print_error("Terraform init failed")
-        print_error(result.stderr)
+        print_error(stderr)
         return False
     
     print_status("Terraform initialized")
     
-    # Import existing resources
+    # Clean and import existing resources
     if existing_resources:
-        import_existing_resources(resources)
+        clean_and_import_resources(resources)
     
     # Plan deployment
     print_info("Planning deployment...")
     plan_cmd = f'terraform plan -var="aws_region={AWS_REGION}" -var="environment={ENVIRONMENT}" -var="app_name={APP_NAME}" -out=tfplan'
-    result = subprocess.run(plan_cmd, shell=True, cwd='infra', capture_output=True, text=True)
+    success, stdout, stderr = run_terraform_command(plan_cmd)
     
-    if result.returncode != 0:
+    if not success:
         print_error("Terraform plan failed")
-        print_error(result.stderr)
+        print_error(stderr)
         return False
     
     # Show plan summary
-    if result.stdout:
-        lines = result.stdout.split('\n')
+    if stdout:
+        lines = stdout.split('\n')
         for line in lines:
             if any(keyword in line for keyword in ['Plan:', 'will be created', 'will be updated', 'will be destroyed', 'No changes']):
                 print_info(f"Plan: {line}")
     
     # Check if anything needs to be created
-    if 'No changes' in result.stdout:
+    if 'No changes' in stdout:
         print_status("✅ All resources exist and are properly managed by Terraform!")
         return True
     
-    # Confirm deployment of missing resources only
+    # Confirm deployment
     if missing_resources:
         print(f"\n{Colors.YELLOW}[WARNING] This will create {len(missing_resources)} missing AWS resources.{Colors.END}")
-        print(f"{Colors.CYAN}Existing resources will NOT be recreated.{Colors.END}")
+        print(f"{Colors.CYAN}Existing resources have been cleaned and re-imported.{Colors.END}")
         confirm = input("Proceed with creating missing resources? (y/N): ")
         
         if confirm.lower() != 'y':
@@ -362,22 +386,14 @@ def run_terraform_deployment(resources):
     
     # Apply changes
     print_info("Applying Terraform configuration...")
-    result = subprocess.run('terraform apply tfplan', shell=True, cwd='infra',
-                          capture_output=True, text=True)
+    success, stdout, stderr = run_terraform_command('terraform apply tfplan')
     
-    if result.returncode == 0:
+    if success:
         print_status("🎉 Infrastructure deployment completed successfully!")
         return True
     else:
         print_error("❌ Terraform apply failed!")
-        print_error(result.stderr)
-        
-        # If we still get "already exists" errors, it means our detection missed something
-        if "already exists" in result.stderr:
-            print_warning("Some resources still show as 'already exists'")
-            print_info("This indicates our AWS resource detection may need refinement")
-            print_info("The resources exist in AWS but may have different names or configurations")
-        
+        print_error(stderr)
         return False
 
 def check_third_party_services():
@@ -428,11 +444,11 @@ def get_aws_account_info():
         return None
 
 def main():
-    """Main deployment function with proper AWS resource import handling"""
+    """Main deployment function with state cleanup and proper re-import"""
     print(f"{Colors.BLUE}")
-    print("=== PDF to Excel SaaS - FIXED TERRAFORM IMPORT Deployment ===")
-    print("============================================================")
-    print("Strategy: Proper AWS resource identification + Import with correct identifiers")
+    print("=== PDF to Excel SaaS - STATE CLEANUP & RE-IMPORT Deployment ===")
+    print("================================================================")
+    print("Strategy: AWS reality check → Clean stale state → Re-import → Deploy missing")
     print(f"App: {APP_NAME} | Environment: {ENVIRONMENT} | Region: {AWS_REGION}")
     print(f"{Colors.END}")
     
@@ -444,7 +460,7 @@ def main():
         
         print_status(f"AWS Account: {account_id}")
         
-        # Step 2: Check all AWS resources and get proper identifiers
+        # Step 2: Check all AWS resources (source of truth)
         resources = check_and_get_resource_details()
         
         print_title("Resource Analysis Summary")
@@ -452,22 +468,37 @@ def main():
         existing_count = sum(1 for r in resources.values() if r.get('exists'))
         missing_count = len(resources) - existing_count
         
-        print_status(f"Existing resources: {existing_count}")
+        print_status(f"Existing resources in AWS: {existing_count}")
         print_warning(f"Missing resources: {missing_count}")
+        
+        if existing_count > 0:
+            print_info("Existing resources (will clean state + re-import):")
+            for key, resource in resources.items():
+                if resource.get('exists'):
+                    print(f"  ✅ {key}: {resource['name']}")
+        
+        if missing_count > 0:
+            print_info("Missing resources (will be created):")
+            for key, resource in resources.items():
+                if not resource.get('exists'):
+                    print(f"  ❌ {key}: {resource['name']}")
         
         # Step 3: Check third-party services
         services = check_third_party_services()
         
-        # Step 4: Handle deployment with proper import logic
+        # Step 4: Handle deployment with state cleanup
         if missing_count > 0 or existing_count > 0:
-            action_msg = f"Import {existing_count} existing + Create {missing_count} missing resources"
+            if existing_count > 0:
+                action_msg = f"Clean state + Re-import {existing_count} existing + Create {missing_count} missing resources"
+            else:
+                action_msg = f"Create {missing_count} missing resources"
             
             proceed = input(f"\n{action_msg}? (y/N): ")
             if proceed.lower() != 'y':
                 print_info("Deployment cancelled")
                 return
             
-            # Clean Terraform state for fresh start
+            # Clean Terraform environment for fresh start
             terraform_dirs = ['infra/.terraform', 'infra/.terraform.lock.hcl']
             for item in terraform_dirs:
                 path = Path(item)
@@ -478,7 +509,7 @@ def main():
                     else:
                         path.unlink()
             
-            # Run deployment with proper imports
+            # Run deployment with state cleanup and re-import
             if run_terraform_deployment(resources):
                 print_status("🎉 Infrastructure deployment successful!")
                 
