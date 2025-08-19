@@ -1,4 +1,4 @@
-.env.prod 
-deployment-state.json 
-.env.prod 
-deployment-state.json 
+.env.prod
+deployment-state.json
+__pycache__/
+.pytest_cache/
