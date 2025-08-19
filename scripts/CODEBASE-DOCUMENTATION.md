@@ -1,4 +1,4 @@
-# PDF to Excel SaaS - Codebase Documentation
+# PDF to Excel SaaS - Enhanced Codebase Documentation
 
 ## 🎯 Project Overview
 **PDF to Excel SaaS** - Convert PDF documents to Excel spreadsheets with high accuracy
@@ -17,13 +17,32 @@ pdf-to-excel-saas/
 └── .github/          # CI/CD workflows
 ```
 
-## 🚀 Key Scripts & Commands
+## 🚀 Enhanced Deployment Scripts
 
-### Core Deployment Scripts
+### 🧠 Intelligent Deploy Script (NEW)
+`scripts/deploy-infrastructure.py` - **Smart AWS-aware deployment**
+
+**Features:**
+• **AWS Resource Discovery** - Scans existing resources directly via boto3
+• **State Drift Analysis** - Compares AWS reality vs Terraform state
+• **Auto-Reconciliation** - Imports orphaned resources, fixes stale state
+• **Dynamic Operations** - Generates create/update/delete/recreate plans
+• **Safe Deployment** - Confirms all changes before applying
+
+**Usage:**
 ```bash
-# Main deployment (production)
+# Requires boto3: pip install boto3
 python scripts/deploy-infrastructure.py
 
+# The script will:
+# 1. Discover existing AWS resources
+# 2. Analyze Terraform state drift
+# 3. Recommend reconciliation actions
+# 4. Apply infrastructure changes safely
+```
+
+### 🔧 Other Core Scripts
+```bash
 # Environment validation
 python scripts/validate_env.py
 
@@ -37,16 +56,123 @@ python scripts/diagnose-infrastructure.py
 python scripts/destroy-infrastructure.py
 ```
 
-### Development Commands
+## ⚠️ CRITICAL FIXES THAT KEEP GETTING LOST
+
+### 🔄 Recurring Import Issues
+**PROBLEM**: Scripts lose essential imports during modifications, causing runtime errors
+
+**PERMANENT SOLUTION**: Always verify these imports exist at the top of every Python script:
+
+#### destroy-infrastructure.py MUST HAVE:
+```python
+import subprocess
+import json
+import sys
+import time  # ← THIS GETS LOST! Required for time.time() in create_rds_snapshot()
+from pathlib import Path
+```
+
+#### deploy-infrastructure.py MUST HAVE:
+```python
+import subprocess
+import json
+import sys
+import time
+import boto3  # ← Required for AWS resource discovery
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Set
+from dataclasses import dataclass
+```
+
+### 🛡️ Automated Verification Script
+**Created**: `scripts/verify-script-integrity.py` - Run this after ANY script modification
+
+```python
+#!/usr/bin/env python3
+"""
+Script Integrity Verifier - Prevents recurring import issues
+Run this after ANY modification to deployment scripts
+"""
+
+import ast
+import sys
+from pathlib import Path
+
+REQUIRED_IMPORTS = {
+    'destroy-infrastructure.py': [
+        'subprocess', 'json', 'sys', 'time', 'pathlib.Path'
+    ],
+    'deploy-infrastructure.py': [
+        'subprocess', 'json', 'sys', 'time', 'boto3', 'pathlib.Path', 
+        'typing.Dict', 'typing.List', 'dataclasses.dataclass'
+    ],
+    'validate_env.py': [
+        'subprocess', 'json', 'sys', 'pathlib.Path'
+    ]
+}
+
+def verify_script_imports(script_path):
+    """Verify script has required imports"""
+    try:
+        with open(script_path, 'r') as f:
+            tree = ast.parse(f.read())
+        
+        imports = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.append(alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ''
+                for alias in node.names:
+                    imports.append(f"{module}.{alias.name}")
+        
+        return imports
+    except Exception as e:
+        return f"Error parsing {script_path}: {e}"
+
+def main():
+    errors = []
+    scripts_dir = Path('scripts')
+    
+    for script_name, required in REQUIRED_IMPORTS.items():
+        script_path = scripts_dir / script_name
+        if not script_path.exists():
+            errors.append(f"Missing script: {script_name}")
+            continue
+            
+        imports = verify_script_imports(script_path)
+        if isinstance(imports, str):  # Error message
+            errors.append(imports)
+            continue
+            
+        missing = [req for req in required if req not in imports]
+        if missing:
+            errors.append(f"{script_name} missing imports: {missing}")
+    
+    if errors:
+        print("❌ SCRIPT INTEGRITY FAILURES:")
+        for error in errors:
+            print(f"  • {error}")
+        sys.exit(1)
+    else:
+        print("✅ All scripts have required imports")
+
+if __name__ == "__main__":
+    main()
+```
+
+### 🔒 Git Pre-commit Hook (Recommended)
+Create `.git/hooks/pre-commit` to run verification automatically:
+
 ```bash
-# Frontend development
-cd frontend && npm run dev
-
-# Backend development  
-cd backend && uvicorn main:app --reload
-
-# Local testing
-docker-compose up --build
+#!/bin/bash
+cd "$(git rev-parse --show-toplevel)"
+python scripts/verify-script-integrity.py
+if [ $? -ne 0 ]; then
+    echo "❌ Script integrity check failed. Fix imports before committing."
+    exit 1
+fi
 ```
 
 ## ⚙️ Environment Configuration
@@ -83,22 +209,29 @@ POSTHOG_KEY=phc_...
 - **ECR Repositories**: Container images
 - **VPC + Subnets**: Network isolation
 
-### Terraform State
+### Terraform State Management
 - State stored in S3 backend
 - DynamoDB table for state locking
 - Encryption at rest enabled
+- **Auto-reconciliation** for drift detection
 
 ## 🔧 Common Issues & Solutions
 
+### Python Dependencies
+**Issue**: `ModuleNotFoundError: No module named 'boto3'`
+**Solution**: Install required packages:
+```bash
+pip install boto3 dataclasses typing
+```
+
 ### Import Errors in Python Scripts
 **Issue**: `NameError: name 'time' is not defined`
-**Solution**: Always include required imports at script top:
+**Root Cause**: Import statements get lost during script modifications
+**Prevention**: Always run `python scripts/verify-script-integrity.py` after changes
+**Quick Fix**: 
 ```python
-import subprocess
-import json
-import sys
+# Add to top of script if missing:
 import time
-from pathlib import Path
 ```
 
 ### AWS Region Consistency
@@ -107,18 +240,12 @@ from pathlib import Path
 - Verify AWS CLI region: `aws configure get region`
 - Scripts override with `--region ap-southeast-2`
 
-### Terraform State Issues
-**Issue**: State file corruption or conflicts
-**Solution**: 
+### Terraform State Drift
+**Issue**: State file out of sync with AWS reality
+**Solution**: Use intelligent deploy script
 ```bash
-# Refresh state
-terraform refresh
-
-# Import existing resources
-terraform import aws_s3_bucket.main bucket-name
-
-# Reset state (dangerous)
-terraform state rm resource.name
+python scripts/deploy-infrastructure.py
+# This auto-detects and reconciles drift
 ```
 
 ### Docker Build Failures
@@ -127,9 +254,6 @@ terraform state rm resource.name
 ```bash
 # Build for AMD64 (AWS ECS)
 docker build --platform linux/amd64 .
-
-# Multi-platform build
-docker buildx build --platform linux/amd64,linux/arm64 .
 ```
 
 ### ECS Deployment Hanging
@@ -159,76 +283,15 @@ docker buildx build --platform linux/amd64,linux/arm64 .
 - Regular automated backups
 - Encryption at rest enabled
 
-## 🔄 CI/CD Pipeline
-
-### GitHub Actions Workflows
-```yaml
-# .github/workflows/deploy.yml
-- Build frontend/backend images
-- Push to ECR
-- Deploy to ECS
-- Run health checks
-```
-
-### Deployment Process
-1. Code push triggers GitHub Action
-2. Docker images built and pushed to ECR
-3. ECS services updated with new images
-4. Health checks verify deployment
-5. Rollback on failure
-
-## 📊 Monitoring & Observability
-
-### Sentry (Error Tracking)
-- Frontend: React error boundary
-- Backend: FastAPI middleware
-- Real-time error alerts
-
-### PostHog (Analytics)
-- User behavior tracking
-- Feature usage metrics
-- Conversion funnel analysis
-
-### CloudWatch (Infrastructure)
-- Container logs and metrics
-- RDS performance insights
-- Custom dashboards
-
-## 🧪 Testing Strategy
-
-### Local Testing
-```bash
-# Unit tests
-cd backend && pytest
-cd frontend && npm test
-
-# Integration tests
-docker-compose -f docker-compose.test.yml up
-
-# End-to-end tests
-cd frontend && npm run test:e2e
-```
-
-### Production Validation
-```bash
-# Health checks
-curl https://api.your-domain.com/health
-
-# Database connectivity
-python scripts/diagnose-infrastructure.py
-
-# Full system test
-python scripts/validate_env.py
-```
-
 ## 🚀 Deployment Checklist
 
 ### Pre-Deployment
+- [ ] Run `python scripts/verify-script-integrity.py`
 - [ ] Environment variables configured
-- [ ] AWS credentials valid
+- [ ] AWS credentials valid (`aws sts get-caller-identity`)
+- [ ] Python dependencies installed (`pip install boto3`)
 - [ ] Docker images built successfully
 - [ ] Database migrations ready
-- [ ] SSL certificates valid
 
 ### Post-Deployment
 - [ ] Health endpoints responding
@@ -341,13 +404,27 @@ refactor: optimize image processing pipeline
 - CI/CD pipeline with GitHub Actions
 - Environment configuration templates
 
+### v2.0.0 - Intelligent Deployment (Current)
+- **Enhanced**: AWS resource discovery and state reconciliation
+- **Fixed**: Recurring import issues with verification system
+- **Added**: Comprehensive drift analysis and auto-remediation
+- **Improved**: Documentation with permanent solutions
+
 ### Current State
 - **Branch**: `feat/infrastructure-clean`
-- **Status**: Infrastructure deployment in progress
+- **Status**: Enhanced infrastructure deployment ready
 - **Region**: ap-southeast-2 (Sydney)
 - **Environment**: Production-ready configuration
 
 ---
+
+## 🛡️ IMPORTANT: To Prevent Recurring Issues
+
+1. **Always run verification**: `python scripts/verify-script-integrity.py`
+2. **Never modify scripts without testing imports**
+3. **Use the intelligent deploy script for all infrastructure changes**
+4. **Read this documentation before making changes**
+5. **Set up the pre-commit hook for automatic verification**
 
 *Last Updated: August 2025*
 *For questions, create GitHub issue or contact development team*
