@@ -5,6 +5,20 @@ Simple Infrastructure Deployment Script - Technical Debt Reduction
 - Minimal complexity: Essential features only
 - Clear error handling: Simple and direct
 - No file modification: Never touches Terraform files
+
+Troubleshooting Notes
+---------------------
+Issue: "ResourceInUse" errors when deleting ELB target groups.
+Solution: The target group is still attached to an ALB listener. Detach or
+remove the listener/ALB before re-running the deployment.
+
+Issue: "InvalidParameterValue" for RDS subnet groups.
+Solution: Ensure all subnets defined for the DB subnet group belong to the same
+VPC.
+
+Issue: "InvalidConfigurationRequest" about security groups.
+Solution: One or more security group IDs are incorrect or deleted. Verify the
+IDs and that they exist in the selected AWS region.
 """
 
 import subprocess
@@ -67,14 +81,26 @@ def deploy_infrastructure():
     
     # Apply changes
     print("Applying changes...")
-    apply_cmd = f'terraform apply -auto-approve -var="aws_region={AWS_REGION}" -var="environment={ENVIRONMENT}" -var="app_name={APP_NAME}"'
-    success, _, stderr = run_command(apply_cmd, cwd='infra')
+    apply_cmd = (
+        f'terraform apply -auto-approve -var="aws_region={AWS_REGION}" '
+        f'-var="environment={ENVIRONMENT}" -var="app_name={APP_NAME}"'
+    )
+    success, _, stderr = run_command(apply_cmd, cwd="infra")
     
     if success:
         print("✅ Infrastructure deployed successfully")
         return True
     else:
         print(f"❌ Apply failed: {stderr}")
+
+        # Provide guidance for common failures
+        if "ResourceInUse" in stderr:
+            print("👉 Detach the target group from any ALB listeners before retrying.")
+        if "InvalidParameterValue" in stderr and "DBSubnetGroup" in stderr:
+            print("👉 RDS subnets must all belong to the same VPC.")
+        if "InvalidConfigurationRequest" in stderr and "security groups" in stderr:
+            print("👉 Verify that the referenced security group IDs exist in this region.")
+
         return False
 
 def main():
