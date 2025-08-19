@@ -86,8 +86,9 @@ def check_aws_credentials() -> Tuple[bool, Optional[str]]:
         return False, None
 
 def discover_aws_resources(session: boto3.Session) -> Dict[str, List[Dict]]:
-    """Discover existing AWS resources that match our app pattern"""
+    """Discover ALL existing AWS resources, then filter by relevance"""
     print_title("Discovering AWS Resources")
+    print_info("Scanning AWS account for existing infrastructure...")
     
     resources = {
         'vpcs': [],
@@ -113,121 +114,201 @@ def discover_aws_resources(session: boto3.Session) -> Dict[str, List[Dict]]:
         # VPC Resources
         ec2 = session.client('ec2')
         
-        # VPCs
-        vpcs = ec2.describe_vpcs()['Vpcs']
-        app_vpcs = [vpc for vpc in vpcs if any(
-            tag.get('Value', '').startswith(APP_NAME) 
-            for tag in vpc.get('Tags', [])
-        )]
-        resources['vpcs'] = app_vpcs
-        print_info(f"Found {len(app_vpcs)} VPCs")
+        # Get ALL VPCs, then analyze
+        all_vpcs = ec2.describe_vpcs()['Vpcs']
+        print_info(f"Found {len(all_vpcs)} total VPCs in AWS")
         
-        # Subnets
-        if app_vpcs:
-            vpc_ids = [vpc['VpcId'] for vpc in app_vpcs]
-            subnets = ec2.describe_subnets(
-                Filters=[{'Name': 'vpc-id', 'Values': vpc_ids}]
-            )['Subnets']
-            resources['subnets'] = subnets
-            print_info(f"Found {len(subnets)} Subnets")
+        # Show what we found
+        for vpc in all_vpcs:
+            vpc_name = "unnamed"
+            for tag in vpc.get('Tags', []):
+                if tag['Key'] == 'Name':
+                    vpc_name = tag['Value']
+                    break
+            print_info(f"  VPC: {vpc['VpcId']} ({vpc_name}) - CIDR: {vpc['CidrBlock']}")
+            
+            # Check if this looks like our VPC
+            if APP_NAME in vpc_name.lower() or any(APP_NAME in tag.get('Value', '').lower() for tag in vpc.get('Tags', [])):
+                resources['vpcs'].append(vpc)
+                
+        print_info(f"Identified {len(resources['vpcs'])} VPCs belonging to {APP_NAME}")
         
-        # Security Groups
-        security_groups = ec2.describe_security_groups()['SecurityGroups']
-        app_sgs = [sg for sg in security_groups if any(
-            APP_NAME in sg.get('GroupName', '') or
-            any(tag.get('Value', '').startswith(APP_NAME) 
-                for tag in sg.get('Tags', []))
-        )]
-        resources['security_groups'] = app_sgs
-        print_info(f"Found {len(app_sgs)} Security Groups")
+        # Get ALL subnets, then filter by VPC
+        all_subnets = ec2.describe_subnets()['Subnets']
+        print_info(f"Found {len(all_subnets)} total subnets in AWS")
         
-        # Load Balancers
+        if resources['vpcs']:
+            our_vpc_ids = [vpc['VpcId'] for vpc in resources['vpcs']]
+            our_subnets = [subnet for subnet in all_subnets if subnet['VpcId'] in our_vpc_ids]
+            resources['subnets'] = our_subnets
+            print_info(f"Found {len(our_subnets)} subnets in our VPCs")
+            
+            for subnet in our_subnets:
+                subnet_name = "unnamed"
+                for tag in subnet.get('Tags', []):
+                    if tag['Key'] == 'Name':
+                        subnet_name = tag['Value']
+                        break
+                print_info(f"  Subnet: {subnet['SubnetId']} ({subnet_name}) - CIDR: {subnet['CidrBlock']}")
+        
+        # Get ALL security groups, then filter by VPC
+        all_sgs = ec2.describe_security_groups()['SecurityGroups']
+        if resources['vpcs']:
+            our_vpc_ids = [vpc['VpcId'] for vpc in resources['vpcs']]
+            our_sgs = [sg for sg in all_sgs if sg['VpcId'] in our_vpc_ids]
+            resources['security_groups'] = our_sgs
+            print_info(f"Found {len(our_sgs)} security groups in our VPCs")
+        
+        # Load Balancers - check all, identify ours
         elbv2 = session.client('elbv2')
-        load_balancers = elbv2.describe_load_balancers()['LoadBalancers']
-        app_lbs = [lb for lb in load_balancers if APP_NAME in lb.get('LoadBalancerName', '')]
-        resources['load_balancers'] = app_lbs
-        print_info(f"Found {len(app_lbs)} Load Balancers")
+        all_lbs = elbv2.describe_load_balancers()['LoadBalancers']
+        print_info(f"Found {len(all_lbs)} total load balancers in AWS")
         
-        # Target Groups
-        target_groups = elbv2.describe_target_groups()['TargetGroups']
-        app_tgs = [tg for tg in target_groups if APP_NAME in tg.get('TargetGroupName', '')]
-        resources['target_groups'] = app_tgs
-        print_info(f"Found {len(app_tgs)} Target Groups")
+        our_lbs = []
+        for lb in all_lbs:
+            lb_name = lb.get('LoadBalancerName', '')
+            if APP_NAME in lb_name or ENVIRONMENT in lb_name:
+                our_lbs.append(lb)
+                print_info(f"  Load Balancer: {lb_name} - DNS: {lb['DNSName']}")
+        
+        resources['load_balancers'] = our_lbs
+        print_info(f"Identified {len(our_lbs)} load balancers belonging to {APP_NAME}")
+        
+        # Target Groups - check all, identify ours
+        all_tgs = elbv2.describe_target_groups()['TargetGroups']
+        our_tgs = []
+        for tg in all_tgs:
+            tg_name = tg.get('TargetGroupName', '')
+            if APP_NAME in tg_name or ENVIRONMENT in tg_name:
+                our_tgs.append(tg)
+                print_info(f"  Target Group: {tg_name} - Port: {tg['Port']}")
+        
+        resources['target_groups'] = our_tgs
+        print_info(f"Identified {len(our_tgs)} target groups belonging to {APP_NAME}")
         
         # ECS Resources
         ecs = session.client('ecs')
         
-        # ECS Clusters
-        cluster_arns = ecs.list_clusters()['clusterArns']
-        if cluster_arns:
-            clusters = ecs.describe_clusters(clusters=cluster_arns)['clusters']
-            app_clusters = [c for c in clusters if APP_NAME in c.get('clusterName', '')]
-            resources['ecs_clusters'] = app_clusters
-            print_info(f"Found {len(app_clusters)} ECS Clusters")
+        # Get ALL ECS clusters
+        all_cluster_arns = ecs.list_clusters()['clusterArns']
+        if all_cluster_arns:
+            all_clusters = ecs.describe_clusters(clusters=all_cluster_arns)['clusters']
+            print_info(f"Found {len(all_clusters)} total ECS clusters in AWS")
             
-            # ECS Services
-            for cluster in app_clusters:
+            our_clusters = []
+            for cluster in all_clusters:
+                cluster_name = cluster.get('clusterName', '')
+                if APP_NAME in cluster_name or ENVIRONMENT in cluster_name:
+                    our_clusters.append(cluster)
+                    print_info(f"  ECS Cluster: {cluster_name} - Status: {cluster['status']}")
+            
+            resources['ecs_clusters'] = our_clusters
+            print_info(f"Identified {len(our_clusters)} ECS clusters belonging to {APP_NAME}")
+            
+            # Get services from our clusters
+            all_our_services = []
+            for cluster in our_clusters:
                 service_arns = ecs.list_services(cluster=cluster['clusterArn'])['serviceArns']
                 if service_arns:
                     services = ecs.describe_services(
                         cluster=cluster['clusterArn'], 
                         services=service_arns
                     )['services']
-                    resources['ecs_services'].extend(services)
-            print_info(f"Found {len(resources['ecs_services'])} ECS Services")
+                    all_our_services.extend(services)
+                    
+                    for service in services:
+                        print_info(f"    Service: {service['serviceName']} - Desired: {service['desiredCount']}")
+            
+            resources['ecs_services'] = all_our_services
+            print_info(f"Found {len(all_our_services)} ECS services in our clusters")
         
         # ECR Repositories
         ecr = session.client('ecr')
         try:
-            repositories = ecr.describe_repositories()['repositories']
-            app_repos = [repo for repo in repositories if APP_NAME in repo.get('repositoryName', '')]
-            resources['ecr_repositories'] = app_repos
-            print_info(f"Found {len(app_repos)} ECR Repositories")
+            all_repos = ecr.describe_repositories()['repositories']
+            our_repos = []
+            for repo in all_repos:
+                repo_name = repo.get('repositoryName', '')
+                if APP_NAME in repo_name:
+                    our_repos.append(repo)
+                    print_info(f"  ECR Repository: {repo_name}")
+            
+            resources['ecr_repositories'] = our_repos
+            print_info(f"Found {len(our_repos)} ECR repositories for {APP_NAME}")
         except Exception as e:
             print_warning(f"Could not check ECR repositories: {e}")
         
         # RDS Resources
         rds = session.client('rds')
         
-        # RDS Instances
-        db_instances = rds.describe_db_instances()['DBInstances']
-        app_dbs = [db for db in db_instances if APP_NAME in db.get('DBInstanceIdentifier', '')]
-        resources['rds_instances'] = app_dbs
-        print_info(f"Found {len(app_dbs)} RDS Instances")
+        # Get ALL RDS instances
+        all_db_instances = rds.describe_db_instances()['DBInstances']
+        our_dbs = []
+        for db in all_db_instances:
+            db_id = db.get('DBInstanceIdentifier', '')
+            if APP_NAME in db_id or ENVIRONMENT in db_id:
+                our_dbs.append(db)
+                print_info(f"  RDS Instance: {db_id} - Engine: {db['Engine']} - Status: {db['DBInstanceStatus']}")
+        
+        resources['rds_instances'] = our_dbs
+        print_info(f"Found {len(our_dbs)} RDS instances for {APP_NAME}")
         
         # RDS Subnet Groups
-        subnet_groups = rds.describe_db_subnet_groups()['DBSubnetGroups']
-        app_subnet_groups = [sg for sg in subnet_groups if APP_NAME in sg.get('DBSubnetGroupName', '')]
-        resources['rds_subnets'] = app_subnet_groups
-        print_info(f"Found {len(app_subnet_groups)} RDS Subnet Groups")
+        all_subnet_groups = rds.describe_db_subnet_groups()['DBSubnetGroups']
+        our_subnet_groups = []
+        for sg in all_subnet_groups:
+            sg_name = sg.get('DBSubnetGroupName', '')
+            if APP_NAME in sg_name or ENVIRONMENT in sg_name:
+                our_subnet_groups.append(sg)
+                print_info(f"  RDS Subnet Group: {sg_name}")
+        
+        resources['rds_subnets'] = our_subnet_groups
         
         # S3 Buckets
         s3 = session.client('s3')
         try:
-            buckets = s3.list_buckets()['Buckets']
-            app_buckets = [bucket for bucket in buckets if APP_NAME in bucket.get('Name', '')]
-            resources['s3_buckets'] = app_buckets
-            print_info(f"Found {len(app_buckets)} S3 Buckets")
+            all_buckets = s3.list_buckets()['Buckets']
+            our_buckets = []
+            for bucket in all_buckets:
+                bucket_name = bucket.get('Name', '')
+                if APP_NAME in bucket_name or ENVIRONMENT in bucket_name:
+                    our_buckets.append(bucket)
+                    print_info(f"  S3 Bucket: {bucket_name}")
+            
+            resources['s3_buckets'] = our_buckets
+            print_info(f"Found {len(our_buckets)} S3 buckets for {APP_NAME}")
         except Exception as e:
             print_warning(f"Could not check S3 buckets: {e}")
         
         # IAM Roles
         iam = session.client('iam')
         try:
-            roles = iam.list_roles()['Roles']
-            app_roles = [role for role in roles if APP_NAME in role.get('RoleName', '')]
-            resources['iam_roles'] = app_roles
-            print_info(f"Found {len(app_roles)} IAM Roles")
+            all_roles = iam.list_roles()['Roles']
+            our_roles = []
+            for role in all_roles:
+                role_name = role.get('RoleName', '')
+                if APP_NAME in role_name or ENVIRONMENT in role_name:
+                    our_roles.append(role)
+                    print_info(f"  IAM Role: {role_name}")
+            
+            resources['iam_roles'] = our_roles
+            print_info(f"Found {len(our_roles)} IAM roles for {APP_NAME}")
         except Exception as e:
             print_warning(f"Could not check IAM roles: {e}")
         
         # CloudWatch Log Groups
         logs = session.client('logs')
         try:
-            log_groups = logs.describe_log_groups()['logGroups']
-            app_logs = [lg for lg in log_groups if APP_NAME in lg.get('logGroupName', '')]
-            resources['cloudwatch_logs'] = app_logs
-            print_info(f"Found {len(app_logs)} CloudWatch Log Groups")
+            all_log_groups = logs.describe_log_groups()['logGroups']
+            our_logs = []
+            for lg in all_log_groups:
+                lg_name = lg.get('logGroupName', '')
+                if APP_NAME in lg_name or ENVIRONMENT in lg_name:
+                    our_logs.append(lg)
+                    print_info(f"  Log Group: {lg_name}")
+            
+            resources['cloudwatch_logs'] = our_logs
+            print_info(f"Found {len(our_logs)} CloudWatch log groups for {APP_NAME}")
         except Exception as e:
             print_warning(f"Could not check CloudWatch logs: {e}")
             
@@ -252,189 +333,67 @@ def get_terraform_state() -> Dict:
     success, stdout, stderr = run_command('terraform show -json', cwd='infra')
     if not success:
         print_warning(f"Could not read Terraform state: {stderr}")
-        return {}
+        # If no state exists, return empty structure
+        return {'values': {'root_module': {'resources': []}}}
     
     try:
         state = json.loads(stdout)
         resources = state.get('values', {}).get('root_module', {}).get('resources', [])
         print_info(f"Found {len(resources)} resources in Terraform state")
+        
+        # Show what's in state
+        for resource in resources:
+            resource_address = f"{resource['type']}.{resource['name']}"
+            print_info(f"  In State: {resource_address}")
+        
         return state
     except json.JSONDecodeError as e:
         print_error(f"Invalid Terraform state JSON: {e}")
         return {}
 
 def analyze_drift(aws_resources: Dict, terraform_state: Dict) -> List[ResourceDrift]:
-    """Analyze drift between AWS reality and Terraform state"""
+    """Analyze what exists in AWS vs what Terraform expects"""
     print_title("Analyzing Resource Drift")
+    
+    print_info("Comparing AWS reality with Terraform expectations...")
+    
+    # Get expected resources from Terraform configuration
+    expected_resources = {
+        'aws_vpc.main': 'VPC',
+        'aws_subnet.public': 'Public Subnets',
+        'aws_subnet.private': 'Private Subnets',
+        'aws_security_group.alb': 'ALB Security Group',
+        'aws_security_group.ecs': 'ECS Security Group', 
+        'aws_security_group.rds': 'RDS Security Group',
+        'aws_lb.main': 'Application Load Balancer',
+        'aws_lb_target_group.frontend': 'Frontend Target Group',
+        'aws_lb_target_group.backend': 'Backend Target Group',
+        'aws_ecs_cluster.main': 'ECS Cluster',
+        'aws_ecr_repository.frontend': 'Frontend ECR Repository',
+        'aws_ecr_repository.backend': 'Backend ECR Repository',
+        'aws_db_instance.main': 'RDS Database',
+        'aws_s3_bucket.main': 'S3 Bucket'
+    }
     
     drifts = []
     tf_resources = terraform_state.get('values', {}).get('root_module', {}).get('resources', [])
+    tf_resource_addresses = {f"{r['type']}.{r['name']}" for r in tf_resources}
     
-    # Convert Terraform resources to lookup dict
-    tf_lookup = {}
-    for resource in tf_resources:
-        key = f"{resource['type']}.{resource['name']}"
-        tf_lookup[key] = resource
+    print_info(f"Expected {len(expected_resources)} resources based on Terraform configuration")
+    print_info(f"Found {len(tf_resource_addresses)} resources in current Terraform state")
     
-    # Check for resources in AWS but not in Terraform (orphaned)
-    aws_resource_map = {
-        'aws_vpc': aws_resources['vpcs'],
-        'aws_subnet': aws_resources['subnets'],
-        'aws_security_group': aws_resources['security_groups'],
-        'aws_lb': aws_resources['load_balancers'],
-        'aws_lb_target_group': aws_resources['target_groups'],
-        'aws_ecs_cluster': aws_resources['ecs_clusters'],
-        'aws_ecs_service': aws_resources['ecs_services'],
-        'aws_ecr_repository': aws_resources['ecr_repositories'],
-        'aws_db_instance': aws_resources['rds_instances'],
-        'aws_db_subnet_group': aws_resources['rds_subnets'],
-        'aws_s3_bucket': aws_resources['s3_buckets'],
-        'aws_iam_role': aws_resources['iam_roles'],
-        'aws_cloudwatch_log_group': aws_resources['cloudwatch_logs']
-    }
+    # Check for missing expected resources (exist in config but not in state)
+    for expected_address, description in expected_resources.items():
+        if expected_address not in tf_resource_addresses:
+            print_warning(f"Missing from state: {expected_address} ({description})")
     
-    # Find orphaned resources (in AWS but not in Terraform)
-    for resource_type, aws_items in aws_resource_map.items():
-        for item in aws_items:
-            # Extract identifier based on resource type
-            identifier = get_resource_identifier(resource_type, item)
-            tf_key = f"{resource_type}.{identifier}"
-            
-            if tf_key not in tf_lookup:
-                drifts.append(ResourceDrift(
-                    resource_type=resource_type,
-                    resource_name=identifier,
-                    aws_state=item,
-                    terraform_state=None,
-                    drift_type='orphaned',
-                    recommended_action='import'
-                ))
-    
-    # Find missing resources (in Terraform but not in AWS)
-    for tf_key, tf_resource in tf_lookup.items():
-        resource_type = tf_resource['type']
-        if resource_type in aws_resource_map:
-            # Check if this Terraform resource exists in AWS
-            aws_items = aws_resource_map[resource_type]
-            tf_identifier = tf_resource['name']
-            
-            found_in_aws = False
-            for aws_item in aws_items:
-                aws_identifier = get_resource_identifier(resource_type, aws_item)
-                if aws_identifier == tf_identifier:
-                    found_in_aws = True
-                    break
-            
-            if not found_in_aws:
-                drifts.append(ResourceDrift(
-                    resource_type=resource_type,
-                    resource_name=tf_identifier,
-                    aws_state={},
-                    terraform_state=tf_resource,
-                    drift_type='missing',
-                    recommended_action='create'
-                ))
-    
-    print_info(f"Found {len(drifts)} resource drifts")
-    return drifts
-
-def get_resource_identifier(resource_type: str, aws_resource: Dict) -> str:
-    """Extract resource identifier from AWS resource data"""
-    identifier_map = {
-        'aws_vpc': 'VpcId',
-        'aws_subnet': 'SubnetId', 
-        'aws_security_group': 'GroupName',
-        'aws_lb': 'LoadBalancerName',
-        'aws_lb_target_group': 'TargetGroupName',
-        'aws_ecs_cluster': 'clusterName',
-        'aws_ecs_service': 'serviceName',
-        'aws_ecr_repository': 'repositoryName',
-        'aws_db_instance': 'DBInstanceIdentifier',
-        'aws_db_subnet_group': 'DBSubnetGroupName',
-        'aws_s3_bucket': 'Name',
-        'aws_iam_role': 'RoleName',
-        'aws_cloudwatch_log_group': 'logGroupName'
-    }
-    
-    field = identifier_map.get(resource_type, 'id')
-    return aws_resource.get(field, 'unknown')
-
-def reconcile_state(drifts: List[ResourceDrift]) -> bool:
-    """Reconcile Terraform state with AWS reality"""
-    if not drifts:
-        print_status("No state reconciliation needed")
-        return True
-    
-    print_title("State Reconciliation Plan")
-    
-    # Group drifts by action
-    actions = {'import': [], 'create': [], 'update': [], 'delete': [], 'recreate': []}
-    
-    for drift in drifts:
-        actions[drift.recommended_action].append(drift)
-    
-    # Display reconciliation plan
-    for action, items in actions.items():
+    # Summary of what we found in AWS
+    print_info("\nAWS Resource Summary:")
+    for resource_type, items in aws_resources.items():
         if items:
-            print(f"\n{Colors.CYAN}{action.upper()} ({len(items)} resources):{Colors.END}")
-            for item in items:
-                print(f"  • {item.resource_type}.{item.resource_name} - {item.drift_type}")
+            print_info(f"  {resource_type}: {len(items)} found")
     
-    # Ask for confirmation
-    print(f"\n{Colors.YELLOW}This will modify Terraform state and/or resources.{Colors.END}")
-    confirm = input("Proceed with reconciliation? (y/N): ")
-    if confirm.lower() != 'y':
-        print_info("State reconciliation cancelled")
-        return False
-    
-    # Execute reconciliation
-    print_title("Executing State Reconciliation")
-    
-    success_count = 0
-    total_count = len(drifts)
-    
-    # Import orphaned resources
-    for drift in actions['import']:
-        print_info(f"Importing {drift.resource_type}.{drift.resource_name}")
-        # Generate import command
-        aws_id = get_aws_resource_id(drift.resource_type, drift.aws_state)
-        import_cmd = f'terraform import {drift.resource_type}.{drift.resource_name} {aws_id}'
-        success, stdout, stderr = run_command(import_cmd, cwd='infra')
-        
-        if success:
-            print_status(f"Imported {drift.resource_name}")
-            success_count += 1
-        else:
-            print_error(f"Failed to import {drift.resource_name}: {stderr}")
-    
-    # Handle missing resources (will be created in next terraform apply)
-    for drift in actions['create']:
-        print_info(f"Marked for creation: {drift.resource_type}.{drift.resource_name}")
-        success_count += 1
-    
-    print_status(f"Reconciliation completed: {success_count}/{total_count} successful")
-    return success_count == total_count
-
-def get_aws_resource_id(resource_type: str, aws_resource: Dict) -> str:
-    """Get the AWS resource ID for terraform import"""
-    id_map = {
-        'aws_vpc': 'VpcId',
-        'aws_subnet': 'SubnetId',
-        'aws_security_group': 'GroupId',
-        'aws_lb': 'LoadBalancerArn',
-        'aws_lb_target_group': 'TargetGroupArn',
-        'aws_ecs_cluster': 'clusterArn',
-        'aws_ecs_service': 'serviceArn',
-        'aws_ecr_repository': 'repositoryName',
-        'aws_db_instance': 'DBInstanceIdentifier',
-        'aws_db_subnet_group': 'DBSubnetGroupName',
-        'aws_s3_bucket': 'Name',
-        'aws_iam_role': 'RoleName',
-        'aws_cloudwatch_log_group': 'logGroupName'
-    }
-    
-    field = id_map.get(resource_type, 'id')
-    return aws_resource.get(field, '')
+    return drifts
 
 def generate_terraform_plan() -> bool:
     """Generate and review Terraform execution plan"""
@@ -443,15 +402,21 @@ def generate_terraform_plan() -> bool:
     plan_cmd = f'terraform plan -detailed-exitcode -var="aws_region={AWS_REGION}" -var="environment={ENVIRONMENT}" -var="app_name={APP_NAME}"'
     success, stdout, stderr = run_command(plan_cmd, cwd='infra')
     
+    # Terraform plan exit codes: 0 = no changes, 1 = error, 2 = changes planned
     if success:
         print_status("No changes needed - infrastructure is up to date")
         return True
-    elif stderr and "Error" in stderr:
+    elif "Error" in stderr and "exit status 1" in stderr:
         print_error(f"Plan failed: {stderr}")
         return False
     else:
         print_info("Changes detected in plan")
-        print(stdout)
+        # Show a summary of the plan
+        if stdout:
+            lines = stdout.split('\n')
+            for line in lines:
+                if 'Plan:' in line or '# aws_' in line or 'will be created' in line or 'will be destroyed' in line:
+                    print_info(f"  {line.strip()}")
         return True
 
 def apply_terraform_changes() -> bool:
@@ -504,26 +469,19 @@ def main():
         # Step 3: Analyze drift
         drifts = analyze_drift(aws_resources, terraform_state)
         
-        # Step 4: Reconcile state if needed
-        if drifts:
-            if not reconcile_state(drifts):
-                print_error("State reconciliation failed")
-                sys.exit(1)
-        
-        # Step 5: Generate Terraform plan
+        # Step 4: Generate Terraform plan (this will show what needs to be created/updated)
         if not generate_terraform_plan():
             print_error("Terraform planning failed")
             sys.exit(1)
         
-        # Step 6: Apply changes
+        # Step 5: Apply changes if user confirms
         if not apply_terraform_changes():
-            print_error("Terraform apply failed")
+            print_error("Terraform apply failed or cancelled")
             sys.exit(1)
         
         # Success summary
         print_title("Deployment Summary")
         print_status("✅ AWS resource discovery completed")
-        print_status("✅ State reconciliation completed")
         print_status("✅ Infrastructure deployment completed")
         
         print_info("\nNext steps:")
