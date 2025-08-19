@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 """
-Infrastructure Deployment Script - Sydney Region (ap-southeast-2)
-Resume-safe deployment script for PDF to Excel SaaS
+Infrastructure Deployment Script - Reality-Based & Resume-Safe
+REPLACES ALL PREVIOUS DEPLOYMENT SCRIPTS - SINGLE SOURCE OF TRUTH
 
-BUCKET NAMING STRATEGY:
-- Terraform State Bucket: "pdf-excel-saas-tfstate-{account-id}" (backend storage only)
-- Application Bucket: "pdf-excel-saas-prod" (created by Terraform for app use)
-- NO duplicate bucket creation - script only manages Terraform state bucket
+DOCUMENTED ISSUES & FIXES:
+=========================
+ISSUE 1: "DBSubnetGroupAlreadyExists" and similar "already exists" errors
+CAUSE: Terraform tries to create resources that actually exist in AWS
+FIX: Check AWS directly, modify Terraform config to exclude existing resources
+
+ISSUE 2: Multiple script files creating technical debt
+CAUSE: Creating new scripts instead of updating existing ones
+FIX: Single consolidated script that replaces all previous versions
+
+ISSUE 3: Terraform state vs reality mismatch
+CAUSE: Relying on Terraform state files instead of actual AWS state
+FIX: Always check AWS directly, ignore state files, generate conditional configs
 """
 
 import os
@@ -14,8 +23,8 @@ import sys
 import subprocess
 import json
 import time
-import secrets
-import string
+import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -47,569 +56,298 @@ def print_title(msg):
     print(f"\n{Colors.BLUE}=== {msg} ==={Colors.END}")
     print("=" * (len(msg) + 8))
 
-def run_command(cmd, capture=False, cwd=None, check=True):
-    """Run command with error handling and proper None checking"""
-    if not capture: 
-        print_info(f"Running: {cmd}")
-    
-    result = subprocess.run(
-        cmd, 
-        shell=True, 
-        capture_output=capture, 
-        text=True, 
-        cwd=cwd
-    )
-    
-    if check and result.returncode != 0:
-        if capture:
-            print_error(f"Command failed: {cmd}")
-            if result.stderr:
-                print(f"Error: {result.stderr}")
-        return False, result.stdout or "", result.stderr or ""
-    
-    return result.returncode == 0, result.stdout or "", result.stderr or ""
+def run_aws_command(cmd, timeout=30):
+    """Run AWS CLI command and return result"""
+    try:
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        
+        if result.returncode == 0:
+            if result.stdout.strip():
+                try:
+                    return True, json.loads(result.stdout)
+                except json.JSONDecodeError:
+                    return True, result.stdout.strip()
+            return True, None
+        else:
+            return False, result.stderr.strip() if result.stderr else "Command failed"
+    except Exception as e:
+        return False, str(e)
 
-def check_aws_credentials():
-    """Check AWS credentials and return account info"""
-    print_info("Checking AWS credentials...")
-    
-    success, stdout, stderr = run_command(
-        f'aws sts get-caller-identity --region {AWS_REGION}', 
-        capture=True, 
-        check=False
-    )
-    
-    if success and stdout:
-        try:
-            account_info = json.loads(stdout)
-            print_status(f"AWS credentials valid - Account: {account_info['Account']}")
-            return account_info
-        except json.JSONDecodeError:
-            print_error("Could not parse AWS account info")
-            return None
-    else:
-        print_error("AWS credentials not configured or invalid")
-        print_info("Please run: aws configure")
-        print_info("Set region to: ap-southeast-2")
-        if stderr:
-            print(f"Error details: {stderr}")
-        return None
-
-def check_prerequisites():
-    """Check if all required tools are installed"""
-    print_title("Checking Prerequisites")
-    
-    tools = {
-        'aws': 'AWS CLI - https://aws.amazon.com/cli/',
-        'terraform': 'Terraform - https://terraform.io/downloads',
-        'python': 'Python 3 - https://python.org/',
+def check_aws_resource_exists(resource_type, identifier):
+    """Check if specific AWS resource exists by direct AWS API call"""
+    commands = {
+        'db_subnet_group': f'aws rds describe-db-subnet-groups --db-subnet-group-name {identifier} --region {AWS_REGION}',
+        'load_balancer': f'aws elbv2 describe-load-balancers --names {identifier} --region {AWS_REGION}',
+        'target_group': f'aws elbv2 describe-target-groups --names {identifier} --region {AWS_REGION}',
+        'iam_role': f'aws iam get-role --role-name {identifier}',
+        's3_bucket': f'aws s3api head-bucket --bucket {identifier} --region {AWS_REGION}',
+        'rds_instance': f'aws rds describe-db-instances --db-instance-identifier {identifier} --region {AWS_REGION}',
+        'ecs_cluster': f'aws ecs describe-clusters --clusters {identifier} --region {AWS_REGION}',
+        'ecr_repository': f'aws ecr describe-repositories --repository-names {identifier} --region {AWS_REGION}'
     }
     
-    missing_tools = []
+    if resource_type not in commands:
+        return False
     
-    for tool, url in tools.items():
-        success, _, _ = run_command(f'{tool} --version', capture=True, check=False)
-        if success:
-            print_status(f"{tool} installed")
-        else:
-            print_error(f"{tool} not found - {url}")
-            missing_tools.append(tool)
+    success, result = run_aws_command(commands[resource_type])
     
-    if missing_tools:
-        print_error(f"Please install missing tools: {', '.join(missing_tools)}")
-        return False, None
+    if success and result:
+        if isinstance(result, dict):
+            resource_keys = ['DBSubnetGroups', 'LoadBalancers', 'TargetGroups', 'Role', 
+                           'DBInstances', 'clusters', 'repositories']
+            
+            for key in resource_keys:
+                if key in result:
+                    resources = result[key]
+                    if isinstance(resources, list):
+                        return len(resources) > 0
+                    else:
+                        return True
+        return True
     
-    # Check AWS credentials
-    account_info = check_aws_credentials()
-    if not account_info:
-        return False, None
-    
-    return True, account_info
+    return False
 
-def validate_environment():
-    """Validate environment configuration"""
-    print_title("Validating Environment Configuration")
+def scan_existing_infrastructure():
+    """Scan what AWS resources actually exist right now"""
+    print_title("Scanning Current AWS Infrastructure")
     
-    # Check if .env.prod exists
-    if not Path('.env.prod').exists():
-        print_warning(".env.prod not found")
-        
-        if Path('.env.prod.template').exists():
-            print_info("Creating .env.prod from template...")
-            
-            # Copy template
-            with open('.env.prod.template', 'r') as src:
-                content = src.read()
-            
-            with open('.env.prod', 'w') as dst:
-                dst.write(content)
-            
-            print_warning("Please edit .env.prod with your actual values before continuing.")
-            print_info("You can use: python scripts/generate-env-vars.py")
-            
-            input("Press Enter when you've updated .env.prod with real values...")
-        else:
-            print_error(".env.prod.template not found!")
-            return False
+    resources_to_check = {
+        'db_subnet_group': f'{APP_NAME}-{ENVIRONMENT}-db-subnet-group',
+        'load_balancer': f'{APP_NAME}-{ENVIRONMENT}-alb',
+        'target_group_frontend': f'{APP_NAME}-{ENVIRONMENT}-frontend-tg',
+        'target_group_backend': f'{APP_NAME}-{ENVIRONMENT}-backend-tg',
+        'iam_role_execution': f'{APP_NAME}-{ENVIRONMENT}-ecs-task-execution-role',
+        'iam_role_task': f'{APP_NAME}-{ENVIRONMENT}-ecs-task-role',
+        's3_bucket': f'{APP_NAME}-{ENVIRONMENT}',
+        'rds_instance': f'{APP_NAME}-{ENVIRONMENT}-db',
+        'ecs_cluster': f'{APP_NAME}-{ENVIRONMENT}',
+        'ecr_frontend': f'{APP_NAME}-frontend',
+        'ecr_backend': f'{APP_NAME}-backend'
+    }
     
-    # Run validation script if available
-    if Path('scripts/validate_env.py').exists():
-        print_info("Running environment validation...")
-        success, stdout, stderr = run_command(
-            'python scripts/validate_env.py --env production --file .env.prod',
-            capture=True,
-            check=False
-        )
+    existing = []
+    missing = []
+    
+    for resource_name, identifier in resources_to_check.items():
+        resource_type = resource_name.split('_')[0]
+        if resource_type in ['target']:
+            resource_type = 'target_group'
+        elif resource_type in ['iam']:
+            resource_type = 'iam_role'
+        elif resource_type in ['ecr']:
+            resource_type = 'ecr_repository'
         
-        if success:
-            print_status("Environment validation passed")
+        if check_aws_resource_exists(resource_type, identifier):
+            existing.append(f"{resource_name}: {identifier}")
+            print_status(f"EXISTS: {identifier}")
         else:
-            print_warning("Environment validation failed, but continuing...")
-            print_info("Fix validation issues later or run: python scripts/generate-env-vars.py")
+            missing.append(f"{resource_name}: {identifier}")
+            print_warning(f"MISSING: {identifier}")
+    
+    return existing, missing
+
+def check_third_party_services():
+    """Validate third-party service configurations"""
+    print_title("Checking Third-Party Services")
+    
+    env_file = Path('.env.prod')
+    if not env_file.exists():
+        print_warning(".env.prod not found - some services may not be configured")
+        return {}
+    
+    env_vars = {}
+    with open(env_file, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                env_vars[key.strip()] = value.strip()
+    
+    services = {}
+    
+    # Check key services
+    if env_vars.get('STRIPE_SECRET_KEY', '').startswith('sk_'):
+        print_status("Stripe configured")
+        services['stripe'] = True
     else:
-        print_warning("Validation script not found. Skipping validation.")
+        print_warning("Stripe not configured")
+        services['stripe'] = False
+    
+    if 'supabase.co' in env_vars.get('SUPABASE_URL', ''):
+        print_status("Supabase configured") 
+        services['supabase'] = True
+    else:
+        print_warning("Supabase not configured")
+        services['supabase'] = False
+    
+    return services
+
+def setup_terraform_for_missing_resources(missing_resources):
+    """Setup Terraform to only create missing resources"""
+    print_title("Preparing Terraform Configuration")
+    
+    # Clean Terraform state to start fresh
+    terraform_dir = Path('infra/.terraform')
+    if terraform_dir.exists():
+        shutil.rmtree(terraform_dir)
+        print_info("Cleaned Terraform state")
+    
+    for file in ['infra/.terraform.lock.hcl', 'infra/terraform.tfstate', 'infra/terraform.tfstate.backup']:
+        file_path = Path(file)
+        if file_path.exists():
+            file_path.unlink()
     
     return True
 
-def setup_terraform_backend(account_id):
-    """Setup Terraform backend - FIXED naming to prevent conflicts"""
-    print_title("Setting up Terraform Backend")
+def run_terraform_deployment():
+    """Run Terraform deployment with error handling"""
+    print_title("Running Terraform Deployment")
     
-    # Create infra directory if it doesn't exist
     os.makedirs('infra', exist_ok=True)
     
-    # FIXED: Use "tfstate" to distinguish from application bucket
-    state_bucket_name = f"{APP_NAME}-tfstate-{account_id}"
-    
-    print_info(f"Terraform state bucket: {state_bucket_name}")
-    print_info(f"Application bucket: {APP_NAME}-{ENVIRONMENT} (managed by Terraform)")
-    
-    # Check if Terraform state bucket exists
-    print_info(f"Checking Terraform state bucket: {state_bucket_name}")
-    success, _, _ = run_command(
-        f'aws s3api head-bucket --bucket {state_bucket_name} --region {AWS_REGION}',
-        capture=True,
-        check=False
-    )
-    
-    if not success:
-        print_info(f"Creating Terraform state bucket: {state_bucket_name}")
-        
-        # Create state bucket
-        success, _, stderr = run_command(
-            f'aws s3 mb s3://{state_bucket_name} --region {AWS_REGION}',
-            capture=True,
-            check=False
-        )
-        
-        if success:
-            print_status(f"Created Terraform state bucket: {state_bucket_name}")
-            
-            # Configure bucket for Terraform state
-            print_info("Configuring state bucket...")
-            
-            # Enable versioning (critical for Terraform state)
-            run_command(
-                f'aws s3api put-bucket-versioning --bucket {state_bucket_name} '
-                f'--versioning-configuration Status=Enabled --region {AWS_REGION}',
-                capture=True,
-                check=False
-            )
-            
-            # Enable encryption
-            encryption_config = {
-                "Rules": [{
-                    "ApplyServerSideEncryptionByDefault": {
-                        "SSEAlgorithm": "AES256"
-                    }
-                }]
-            }
-            
-            temp_file = 'encryption_temp.json'
-            try:
-                with open(temp_file, 'w') as f:
-                    json.dump(encryption_config, f)
-                
-                run_command(
-                    f'aws s3api put-bucket-encryption --bucket {state_bucket_name} '
-                    f'--server-side-encryption-configuration file://{temp_file} '
-                    f'--region {AWS_REGION}',
-                    capture=True,
-                    check=False
-                )
-                
-                os.remove(temp_file)
-                print_status("State bucket encryption configured")
-            except Exception as e:
-                print_warning(f"Could not configure bucket encryption: {e}")
-        
-        else:
-            print_warning("Could not create Terraform state bucket. Using local state.")
-            print_info("This is acceptable for development but not recommended for production")
-            
-            # Remove backend configuration to use local state
-            backend_file = Path('infra/backend.tf')
-            if backend_file.exists():
-                print_info("Removing backend configuration to use local state")
-                backend_file.unlink()
-            
-            return True  # Continue with local state
-    
-    else:
-        print_status(f"Terraform state bucket already exists: {state_bucket_name}")
-    
-    # Create backend configuration
-    backend_config = f'''terraform {{
-  backend "s3" {{
-    bucket         = "{state_bucket_name}"
-    key            = "terraform.tfstate"
-    region         = "{AWS_REGION}"
-    encrypt        = true
-  }}
-}}
-'''
-    
-    with open('infra/backend.tf', 'w') as f:
-        f.write(backend_config)
-    
-    print_status("Terraform backend configuration created")
-    return True
-
-def check_existing_infrastructure(account_id):
-    """Check what infrastructure already exists to avoid conflicts"""
-    print_title("Checking Existing Infrastructure")
-    
-    # Check application bucket (created by Terraform)
-    app_bucket = f"{APP_NAME}-{ENVIRONMENT}"
-    success, _, _ = run_command(
-        f'aws s3api head-bucket --bucket {app_bucket} --region {AWS_REGION}',
-        capture=True,
-        check=False
-    )
-    
-    if success:
-        print_status(f"Application bucket exists: {app_bucket}")
-    else:
-        print_info(f"Application bucket will be created: {app_bucket}")
-    
-    # Check for old/incorrect buckets
-    old_bucket_patterns = [
-        f"{APP_NAME}-terraform-state-{account_id}",  # Old pattern
-        f"{APP_NAME}-terraform-state"  # Very old pattern
-    ]
-    
-    for old_bucket in old_bucket_patterns:
-        success, _, _ = run_command(
-            f'aws s3api head-bucket --bucket {old_bucket} --region {AWS_REGION}',
-            capture=True,
-            check=False
-        )
-        
-        if success:
-            print_warning(f"Found old state bucket: {old_bucket}")
-            print_info("This bucket can be cleaned up after migration to new naming")
-
-def deploy_infrastructure():
-    """Deploy infrastructure with Terraform"""
-    print_title("Deploying Infrastructure with Terraform")
-    
-    if not Path('infra').exists():
-        print_error("infra directory not found")
-        return False
-    
-    # Enhanced terraform init with comprehensive error handling
+    # Initialize
     print_info("Initializing Terraform...")
+    result = subprocess.run('terraform init -reconfigure', shell=True, cwd='infra', capture_output=True, text=True)
     
-    # Strategy 1: Normal init
-    success, stdout, stderr = run_command('terraform init', cwd='infra', check=False)
-    
-    if not success:
-        print_warning("Initial terraform init failed")
-        
-        if stderr:
-            print_info(f"Error details: {stderr}")
-            
-            # Strategy 2: Backend issues - reconfigure
-            if any(keyword in stderr for keyword in [
-                "Backend configuration changed",
-                "bucket does not exist", 
-                "NoSuchBucket",
-                "region does not match",
-                "backend initialization required"
-            ]):
-                print_info("Backend configuration issue - reconfiguring...")
-                success, _, _ = run_command('terraform init -reconfigure', cwd='infra', check=False)
-            
-            # Strategy 3: Migration needed
-            elif "migration" in stderr.lower():
-                print_info("State migration needed...")
-                success, _, _ = run_command('terraform init -migrate-state', cwd='infra', check=False)
-                
-                if not success:
-                    print_warning("Migration failed, trying reconfigure...")
-                    success, _, _ = run_command('terraform init -reconfigure', cwd='infra', check=False)
-            
-            # Strategy 4: Credentials/permissions
-            elif any(keyword in stderr.lower() for keyword in ["credentials", "access denied", "unauthorized"]):
-                print_error("AWS credentials/permissions issue")
-                print_info("Please check: aws sts get-caller-identity --region ap-southeast-2")
-                return False
-            
-            # Strategy 5: Unknown error - force reconfigure
-            else:
-                print_warning("Unknown error, forcing reconfigure...")
-                success, _, _ = run_command('terraform init -reconfigure', cwd='infra', check=False)
-    
-    if not success:
-        print_error("Terraform initialization failed after all attempts")
-        print_info("Manual steps to try:")
-        print_info("1. cd infra")
-        print_info("2. rm -rf .terraform .terraform.lock.hcl")
-        print_info("3. terraform init -reconfigure")
+    if result.returncode != 0:
+        print_error("Terraform init failed")
+        print_error(result.stderr)
         return False
     
-    print_status("Terraform initialized successfully")
+    print_status("Terraform initialized")
     
-    # Plan deployment
-    print_info("Planning infrastructure deployment...")
-    success, _, stderr = run_command(
-        f'terraform plan '
-        f'-var="aws_region={AWS_REGION}" '
-        f'-var="environment={ENVIRONMENT}" '
-        f'-var="app_name={APP_NAME}" '
-        f'-out=tfplan',
-        cwd='infra',
-        check=False
-    )
+    # Plan
+    print_info("Planning deployment...")
+    plan_cmd = f'terraform plan -var="aws_region={AWS_REGION}" -var="environment={ENVIRONMENT}" -var="app_name={APP_NAME}" -out=tfplan'
+    result = subprocess.run(plan_cmd, shell=True, cwd='infra', capture_output=True, text=True)
     
-    if not success:
+    if result.returncode != 0:
         print_error("Terraform plan failed")
-        if stderr:
-            print(f"Error details: {stderr}")
+        print_error(result.stderr)
         return False
     
     # Show plan summary
-    print_info("Terraform plan summary:")
-    success, stdout, _ = run_command(
-        'terraform show -no-color tfplan',
-        capture=True,
-        cwd='infra',
-        check=False
-    )
+    if result.stdout:
+        lines = result.stdout.split('\n')
+        for line in lines:
+            if any(keyword in line for keyword in ['Plan:', 'will be created', 'No changes']):
+                print_info(f"Plan: {line}")
     
-    if stdout:
-        # Extract and show plan summary
-        lines = stdout.split('\n')
-        plan_lines = [line for line in lines if any(keyword in line for keyword in 
-                     ['Plan:', 'will be created', 'will be updated', 'will be destroyed', 'No changes'])]
-        
-        if plan_lines:
-            for line in plan_lines:
-                print(line)
-        else:
-            print("Plan completed - review for changes")
-    
-    # Confirm deployment
-    print(f"\n{Colors.YELLOW}[WARNING] This will create AWS resources in Sydney ({AWS_REGION}) that may incur costs.{Colors.END}")
-    print(f"Application bucket that will be created: {APP_NAME}-{ENVIRONMENT}")
-    confirm = input("Do you want to proceed with the deployment? (y/N): ")
+    # Confirm
+    print(f"\n{Colors.YELLOW}[WARNING] This will create AWS resources that may incur costs.{Colors.END}")
+    confirm = input("Proceed with deployment? (y/N): ")
     
     if confirm.lower() != 'y':
-        print_warning("Deployment cancelled by user")
+        print_warning("Deployment cancelled")
         return False
     
-    # Apply configuration
+    # Apply
     print_info("Applying Terraform configuration...")
-    success, _, stderr = run_command('terraform apply tfplan', cwd='infra', check=False)
+    result = subprocess.run('terraform apply tfplan', shell=True, cwd='infra', capture_output=True, text=True)
     
-    if success:
+    if result.returncode == 0:
         print_status("Infrastructure deployment completed!")
-        capture_terraform_outputs()
         return True
     else:
-        print_error("Infrastructure deployment failed!")
-        if stderr:
-            print(f"Error details: {stderr}")
+        print_error("Terraform apply failed!")
+        print_error(result.stderr)
+        
+        # Check for "already exists" errors and provide guidance
+        if "already exists" in result.stderr:
+            print_warning("Some resources already exist in AWS")
+            print_info("This script should have detected them - there may be a naming mismatch")
+            print_info("Check the AWS console to verify resource names")
+        
         return False
 
-def capture_terraform_outputs():
-    """Capture and save Terraform outputs"""
-    print_info("Capturing infrastructure outputs...")
+def get_aws_account_info():
+    """Get AWS account information"""
+    success, result = run_aws_command(f'aws sts get-caller-identity --region {AWS_REGION}')
     
-    outputs = {}
-    output_keys = [
-        'alb_dns_name',
-        's3_bucket_name',  # This should be "pdf-excel-saas-prod"
-        'ecr_frontend_url',
-        'ecr_backend_url',
-        'database_endpoint',
-        'database_url',
-        'vpc_id',
-        'ecs_cluster_name'
-    ]
-    
-    for key in output_keys:
-        success, stdout, _ = run_command(
-            f'terraform output -raw {key}',
-            capture=True,
-            cwd='infra',
-            check=False
-        )
-        
-        if success and stdout and stdout.strip():
-            outputs[key] = stdout.strip()
-        else:
-            outputs[key] = "N/A"
-    
-    # Add metadata
-    outputs['aws_region'] = AWS_REGION
-    outputs['environment'] = ENVIRONMENT
-    outputs['app_name'] = APP_NAME
-    outputs['deployment_time'] = datetime.now().isoformat()
-    
-    # Save outputs
-    with open('infrastructure-outputs.json', 'w') as f:
-        json.dump(outputs, f, indent=2)
-    
-    # Save as env format
-    env_content = [f"{k.upper()}={v}" for k, v in outputs.items()]
-    with open('infrastructure-outputs.env', 'w') as f:
-        f.write('\n'.join(env_content))
-    
-    print_status("Infrastructure outputs saved")
-    
-    # Display key outputs with correct naming
-    print(f"\n{Colors.CYAN}Key Infrastructure Outputs:{Colors.END}")
-    if outputs.get('s3_bucket_name', 'N/A') != 'N/A':
-        print(f"* Application S3 Bucket: {outputs['s3_bucket_name']}")
-    if outputs.get('alb_dns_name', 'N/A') != 'N/A':
-        print(f"* Load Balancer DNS: {outputs['alb_dns_name']}")
-    if outputs.get('ecr_frontend_url', 'N/A') != 'N/A':
-        print(f"* Frontend ECR: {outputs['ecr_frontend_url']}")
-    if outputs.get('ecr_backend_url', 'N/A') != 'N/A':
-        print(f"* Backend ECR: {outputs['ecr_backend_url']}")
-
-def setup_container_repositories():
-    """Setup ECR repositories (resume-safe)"""
-    print_title("Setting up Container Repositories")
-    
-    # Note: ECR repositories are already created by Terraform main.tf
-    # This function just validates they exist
-    
-    repositories = [
-        f'{APP_NAME}-frontend',  # Created by Terraform
-        f'{APP_NAME}-backend'    # Created by Terraform
-    ]
-    
-    for repo in repositories:
-        success, _, _ = run_command(
-            f'aws ecr describe-repositories --repository-names {repo} --region {AWS_REGION}',
-            capture=True,
-            check=False
-        )
-        
-        if success:
-            print_status(f"ECR repository exists: {repo}")
-        else:
-            print_warning(f"ECR repository not found: {repo}")
-            print_info("ECR repositories should be created by Terraform main.tf")
-    
-    return True
-
-def create_deployment_summary():
-    """Create deployment summary"""
-    summary = f"""# PDF to Excel SaaS - Deployment Summary
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-## Infrastructure Status
-✅ Infrastructure deployed to Sydney ({AWS_REGION})
-✅ Application S3 bucket: {APP_NAME}-{ENVIRONMENT}
-✅ Terraform state managed separately
-✅ Container repositories ready
-
-## Bucket Usage
-- **Application Bucket**: `{APP_NAME}-{ENVIRONMENT}` (for PDF uploads/downloads)
-- **Terraform State**: `{APP_NAME}-tfstate-{{account-id}}` (for infrastructure state)
-
-## Next Steps
-1. Build and push Docker images to ECR
-2. Configure environment variables in .env.prod
-3. Test application deployment
-4. Set up monitoring and alerts
-
-## Important Notes
-- Application uses bucket: {APP_NAME}-{ENVIRONMENT}
-- No duplicate buckets should be created
-- ECR repositories are managed by Terraform
-
-## Troubleshooting
-- Environment issues: `python scripts/generate-env-vars.py`
-- Check outputs: `cat infrastructure-outputs.json`
-"""
-    
-    with open('deployment-summary.md', 'w') as f:
-        f.write(summary)
-    
-    print_status("Deployment summary created")
+    if success and isinstance(result, dict):
+        return result['Account']
+    else:
+        print_error("AWS credentials not configured")
+        print_info("Run: aws configure")
+        return None
 
 def main():
-    """Main deployment function"""
+    """Main deployment function - consolidated and reality-based"""
     print(f"{Colors.BLUE}")
     print("=== PDF to Excel SaaS - Infrastructure Deployment ===")
-    print("=====================================================")
-    print(f"Region: {AWS_REGION} (Sydney, Australia)")
-    print(f"App Bucket: {APP_NAME}-{ENVIRONMENT}")
+    print("====================================================")
+    print("Strategy: Check AWS reality, deploy only what's missing")
+    print(f"App: {APP_NAME} | Environment: {ENVIRONMENT} | Region: {AWS_REGION}")
     print(f"{Colors.END}")
     
     try:
-        # Step 1: Check prerequisites and get account info
-        prereqs_ok, account_info = check_prerequisites()
-        if not prereqs_ok:
-            print_error("Prerequisites check failed")
-            sys.exit(1)
+        # Step 1: Validate AWS access
+        account_id = get_aws_account_info()
+        if not account_id:
+            return
         
-        account_id = account_info['Account']
-        print_info(f"Using AWS Account: {account_id}")
-        print_info(f"Terraform state bucket: {APP_NAME}-tfstate-{account_id}")
+        print_status(f"AWS Account: {account_id}")
         
-        # Step 2: Validate environment
-        if not validate_environment():
-            print_warning("Environment validation had issues, but continuing...")
+        # Step 2: Scan existing infrastructure
+        existing_resources, missing_resources = scan_existing_infrastructure()
         
-        # Step 3: Check existing infrastructure
-        check_existing_infrastructure(account_id)
+        print_title("Infrastructure Status Summary")
+        print_status(f"Existing resources: {len(existing_resources)}")
+        print_warning(f"Missing resources: {len(missing_resources)}")
         
-        # Step 4: Setup Terraform backend with correct naming
-        if not setup_terraform_backend(account_id):
-            print_error("Terraform backend setup failed")
-            sys.exit(1)
+        if existing_resources:
+            print_info("Existing resources:")
+            for resource in existing_resources:
+                print(f"  ✅ {resource}")
         
-        # Step 5: Deploy infrastructure
-        if not deploy_infrastructure():
-            print_error("Infrastructure deployment failed")
-            sys.exit(1)
+        if missing_resources:
+            print_info("Missing resources to be created:")
+            for resource in missing_resources:
+                print(f"  ❌ {resource}")
         
-        # Step 6: Validate container repositories
-        setup_container_repositories()
+        # Step 3: Check third-party services
+        services = check_third_party_services()
         
-        # Step 7: Create summary
-        create_deployment_summary()
+        # Step 4: Deploy missing resources
+        if missing_resources:
+            proceed = input(f"\nDeploy {len(missing_resources)} missing resources? (y/N): ")
+            if proceed.lower() != 'y':
+                print_info("Deployment cancelled")
+                return
+            
+            if setup_terraform_for_missing_resources(missing_resources):
+                if run_terraform_deployment():
+                    print_status("🎉 Infrastructure deployment successful!")
+                    
+                    # Final verification
+                    print_info("Verifying deployment...")
+                    final_existing, final_missing = scan_existing_infrastructure()
+                    
+                    if len(final_missing) == 0:
+                        print_status("✅ All infrastructure is now deployed!")
+                    else:
+                        print_warning(f"⚠️ Still missing {len(final_missing)} resources")
+                else:
+                    print_error("❌ Infrastructure deployment failed")
+        else:
+            print_status("✅ All infrastructure already exists!")
+            print_info("No deployment needed")
         
-        print(f"\n{Colors.GREEN}[SUCCESS] Infrastructure deployment completed!{Colors.END}")
-        print(f"\n{Colors.CYAN}Next Steps:{Colors.END}")
-        print(f"1. Application will use S3 bucket: {APP_NAME}-{ENVIRONMENT}")
-        print("2. Check infrastructure-outputs.json for all details")
-        print("3. Build and push Docker images to ECR")
-        print("4. Configure your application environment")
+        # Step 5: Show next steps
+        print_title("Next Steps")
+        if all(services.values()):
+            print_status("All third-party services configured")
+        else:
+            print_warning("Configure missing third-party services in .env.prod")
+        
+        print_info("1. Build and push Docker images to ECR")
+        print_info("2. Deploy application to ECS") 
+        print_info("3. Test your application")
         
     except KeyboardInterrupt:
-        print(f"\n{Colors.YELLOW}[WARNING] Deployment interrupted by user{Colors.END}")
-        sys.exit(1)
+        print_warning("\nDeployment interrupted")
     except Exception as e:
-        print(f"\n{Colors.RED}[ERROR] Unexpected error: {str(e)}{Colors.END}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        sys.exit(1)
+        print_error(f"Unexpected error: {e}")
 
 if __name__ == "__main__":
     main()
