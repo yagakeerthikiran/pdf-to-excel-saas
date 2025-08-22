@@ -1,13 +1,76 @@
-fastapi
-uvicorn[standard]
-python-dotenv
-mangum
-boto3
-supabase
-stripe
-sentry-sdk[fastapi]
-posthog
-structlog
-pdfplumber
-openpyxl
-camelot-py[cv]
+# PDF to Excel SaaS - Backend Dependencies
+# Production-ready requirements with version pins for stability
+
+# Core FastAPI Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Environment and Configuration
+python-dotenv==1.0.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Database
+sqlalchemy==2.0.23
+alembic==1.12.1
+psycopg2-binary==2.9.9
+
+# AWS Services
+boto3==1.34.0
+botocore==1.34.0
+
+# Authentication and Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+
+# External Services
+supabase==2.0.0
+stripe==7.8.0
+sentry-sdk[fastapi]==1.38.0
+posthog==3.0.2
+
+# Email Services
+boto3==1.34.0  # For SES
+email-validator==2.1.0
+
+# PDF Processing
+pdfplumber==0.10.3
+PyPDF2==3.0.1
+fitz==0.0.1.dev2  # PyMuPDF for advanced PDF processing
+Pillow==10.1.0
+
+# Excel Processing
+openpyxl==3.1.2
+pandas==2.1.3
+xlsxwriter==3.1.9
+
+# OCR and Image Processing
+pytesseract==0.3.10
+opencv-python==4.8.1.78
+
+# Table Extraction (optional advanced features)
+camelot-py[cv]==0.10.1
+tabula-py==2.9.0
+
+# Logging and Monitoring
+structlog==23.2.0
+python-json-logger==2.0.7
+
+# HTTP Client
+requests==2.31.0
+httpx==0.25.2
+
+# Background Tasks (optional)
+celery==5.3.4
+redis==5.0.1
+
+# Development and Testing (optional)
+pytest==7.4.3
+pytest-asyncio==0.21.1
+black==23.11.0
+flake8==6.1.0
+
+# Performance
+gunicorn==21.2.0
