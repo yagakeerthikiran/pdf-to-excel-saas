@@ -1,21 +1,41 @@
-# Use the official AWS Lambda Python base image
-FROM public.ecr.aws/lambda/python:3.11
+# Backend Dockerfile for FastAPI PDF to Excel SaaS
+FROM python:3.11-slim
 
-# Install system dependencies required by camelot-py
-# The base image is Amazon Linux, which uses yum.
-RUN yum install -y ghostscript
+# Set working directory
+WORKDIR /app
 
-# Copy the requirements file
-COPY requirements.txt ./
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    libpq-dev \
+    curl \
+    ghostscript \
+    && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip first
+RUN python -m pip install --upgrade pip
+
+# Copy requirements first for better caching
+COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code
-# We copy everything from the backend directory into the container's working directory
+# Copy application code
 COPY . .
 
-# Set the command to run the handler
-# This should match the handler path in serverless.yml (e.g., handler.main)
-# The format is <file_name>.<handler_function_name>
-CMD [ "handler.handler" ]
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash app
+RUN chown -R app:app /app
+USER app
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8000/health || exit 1
+
+# Run the application
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
