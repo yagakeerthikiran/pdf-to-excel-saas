@@ -26,7 +26,7 @@ passlib[bcrypt]==1.7.4
 python-multipart==0.0.6
 
 # External Services
-supabase==2.3.0  # Updated to support newer httpx
+supabase==2.3.0
 stripe==7.8.0
 sentry-sdk[fastapi]==1.38.0
 posthog==3.0.2
@@ -34,8 +34,8 @@ posthog==3.0.2
 # Email Services
 email-validator==2.1.0
 
-# HTTP Client - pinned for compatibility with supabase 2.3.0
-httpx==0.25.2
+# HTTP Client - pinned to 0.24.1 for compatibility with supabase 2.3.0
+httpx==0.24.1  # Downgraded from 0.25.2 to satisfy supabase dependency
 requests==2.31.0
 
 # PDF Processing
