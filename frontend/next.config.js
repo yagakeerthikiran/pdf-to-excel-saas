@@ -3,11 +3,6 @@ const nextConfig = {
   // Enable standalone output for Docker
   output: 'standalone',
   
-  // Disable telemetry in production
-  experimental: {
-    telemetry: false
-  },
-  
   // Skip build-time validation for APIs that need runtime env
   env: {
     SKIP_ENV_VALIDATION: process.env.SKIP_ENV_VALIDATION || 'false'
@@ -35,7 +30,7 @@ const nextConfig = {
     return config
   },
   
-  // Updated config for Next.js 15 - moved from experimental
+  // Handle external packages
   serverExternalPackages: ['@prisma/client', '@sentry/node']
 }
 
