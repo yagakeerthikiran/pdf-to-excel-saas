@@ -10,9 +10,14 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci --only=production && npm cache clean --force
 
-# Rebuild the source code only when needed
+# Development dependencies for building
 FROM base AS builder
 WORKDIR /app
+
+# Install all dependencies (including dev) for building
+COPY package.json package-lock.json* ./
+RUN npm ci && npm cache clean --force
+
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
@@ -23,6 +28,9 @@ ENV SKIP_ENV_VALIDATION=true
 
 # Create .env.local file with required variables to prevent build errors
 RUN echo "SKIP_ENV_VALIDATION=true" > .env.local
+
+# Fix for lightningcss platform issues on Alpine Linux
+RUN npm rebuild lightningcss --platform=linux --arch=x64 || echo "lightningcss rebuild failed, continuing..."
 
 # Build the application
 RUN npm run build
@@ -54,7 +62,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
 COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
 
 # Install only production dependencies for runtime
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
+COPY --from=deps --chown=nextjs:nodejs /app/node_modules ./node_modules
 
 USER nextjs
 
