@@ -16,20 +16,20 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   
-  // Skip static generation of API routes that require runtime dependencies
+  // Move these out of experimental for Next.js 15
+  skipTrailingSlashRedirect: true,
+  skipMiddlewareUrlNormalize: true,
+  
+  // Exclude problematic routes from static generation
   experimental: {
-    skipTrailingSlashRedirect: true,
-    skipMiddlewareUrlNormalize: true,
+    // Skip static generation of API routes completely
+    isrFlushToDisk: false,
+    // Skip pre-rendering of API routes
+    appDir: true,
   },
   
-  // Exclude API routes from static generation during build
-  generateBuildId: async () => {
-    // Custom build ID to ensure API routes are generated at runtime
-    return 'docker-build-' + Date.now()
-  },
-  
-  // Webpack config to handle problematic dependencies
-  webpack: (config, { isServer }) => {
+  // Custom webpack config to handle Stripe externally
+  webpack: (config, { isServer, dev }) => {
     if (isServer) {
       config.resolve.fallback = {
         ...config.resolve.fallback,
@@ -38,19 +38,24 @@ const nextConfig = {
         tls: false,
         crypto: false
       }
-    }
-    
-    // Exclude Stripe from server-side bundling during build if no API key available
-    if (isServer && !process.env.STRIPE_SECRET_KEY) {
+      
+      // Always externalize stripe to prevent build-time execution
       config.externals = config.externals || []
-      config.externals.push('stripe')
+      if (Array.isArray(config.externals)) {
+        config.externals.push('stripe')
+      } else {
+        config.externals = [config.externals, 'stripe']
+      }
     }
     
     return config
   },
   
-  // Handle external packages
-  serverExternalPackages: ['@prisma/client', '@sentry/node', 'stripe']
+  // Handle external packages that shouldn't be bundled
+  serverExternalPackages: ['@prisma/client', '@sentry/node', 'stripe'],
+  
+  // Skip static optimization for API routes
+  generateStaticParams: () => [],
 }
 
 module.exports = nextConfig
