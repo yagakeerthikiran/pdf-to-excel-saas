@@ -1,4 +1,4 @@
-# Frontend Dockerfile - Fixed Version for PDF to Excel SaaS
+# Frontend Dockerfile - Build-Safe Version with API Route Exclusion
 FROM node:20-alpine AS base
 
 # Install dependencies only when needed
@@ -21,23 +21,20 @@ RUN npm ci && npm cache clean --force
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Set build-time environment variables - including dummy Stripe key for build
+# Set build-time environment variables
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 ENV SKIP_ENV_VALIDATION=true
-ENV NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_dummy_for_build
-ENV STRIPE_SECRET_KEY=sk_test_dummy_for_build
 
-# Create .env.local file with required variables to prevent build errors
+# Create .env.local file to skip validation and provide dummy values
 RUN echo "SKIP_ENV_VALIDATION=true" > .env.local
-RUN echo "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_dummy_for_build" >> .env.local
-RUN echo "STRIPE_SECRET_KEY=sk_test_dummy_for_build" >> .env.local
+RUN echo "NEXT_TELEMETRY_DISABLED=1" >> .env.local
 
 # Fix for lightningcss platform issues on Alpine Linux
 RUN npm rebuild lightningcss --platform=linux --arch=x64 || echo "lightningcss rebuild failed, continuing..."
 
-# Build the application with dummy environment variables
-RUN npm run build
+# Build the application - exclude problematic API routes from static generation
+RUN NEXT_BUILD_SKIP_STATIC_PAGES=true npm run build
 
 # Production image
 FROM base AS runner
