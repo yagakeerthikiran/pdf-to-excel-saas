@@ -21,18 +21,22 @@ RUN npm ci && npm cache clean --force
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Set build-time environment variables
+# Set build-time environment variables - including dummy Stripe key for build
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 ENV SKIP_ENV_VALIDATION=true
+ENV NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_dummy_for_build
+ENV STRIPE_SECRET_KEY=sk_test_dummy_for_build
 
 # Create .env.local file with required variables to prevent build errors
 RUN echo "SKIP_ENV_VALIDATION=true" > .env.local
+RUN echo "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_dummy_for_build" >> .env.local
+RUN echo "STRIPE_SECRET_KEY=sk_test_dummy_for_build" >> .env.local
 
 # Fix for lightningcss platform issues on Alpine Linux
 RUN npm rebuild lightningcss --platform=linux --arch=x64 || echo "lightningcss rebuild failed, continuing..."
 
-# Build the application
+# Build the application with dummy environment variables
 RUN npm run build
 
 # Production image
