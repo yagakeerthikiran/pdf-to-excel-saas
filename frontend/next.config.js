@@ -35,10 +35,8 @@ const nextConfig = {
     return config
   },
   
-  // Handle external modules that cause build issues
-  experimental: {
-    serverComponentsExternalPackages: ['@prisma/client', '@sentry/node']
-  }
+  // Updated config for Next.js 15 - moved from experimental
+  serverExternalPackages: ['@prisma/client', '@sentry/node']
 }
 
 module.exports = nextConfig
