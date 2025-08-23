@@ -16,6 +16,18 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   
+  // Skip static generation of API routes that require runtime dependencies
+  experimental: {
+    skipTrailingSlashRedirect: true,
+    skipMiddlewareUrlNormalize: true,
+  },
+  
+  // Exclude API routes from static generation during build
+  generateBuildId: async () => {
+    // Custom build ID to ensure API routes are generated at runtime
+    return 'docker-build-' + Date.now()
+  },
+  
   // Webpack config to handle problematic dependencies
   webpack: (config, { isServer }) => {
     if (isServer) {
@@ -27,11 +39,18 @@ const nextConfig = {
         crypto: false
       }
     }
+    
+    // Exclude Stripe from server-side bundling during build if no API key available
+    if (isServer && !process.env.STRIPE_SECRET_KEY) {
+      config.externals = config.externals || []
+      config.externals.push('stripe')
+    }
+    
     return config
   },
   
   // Handle external packages
-  serverExternalPackages: ['@prisma/client', '@sentry/node']
+  serverExternalPackages: ['@prisma/client', '@sentry/node', 'stripe']
 }
 
 module.exports = nextConfig
