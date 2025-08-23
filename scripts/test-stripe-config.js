@@ -2,10 +2,11 @@
 /**
  * Stripe Configuration Test Script
  * Tests if Stripe can be initialized with dummy keys for build process
+ * Run from frontend directory: node ../scripts/test-stripe-config.js
  */
 
 console.log('🔧 Testing Stripe Configuration for Build...');
-console.log('=' * 50);
+console.log('='.repeat(50));
 
 // Test dummy keys (same as used in Dockerfile)
 const dummyPublicKey = 'pk_test_dummy_for_build';
@@ -14,6 +15,17 @@ const dummySecretKey = 'sk_test_dummy_for_build';
 console.log(`📋 Testing with dummy keys:`);
 console.log(`   Public Key: ${dummyPublicKey}`);
 console.log(`   Secret Key: ${dummySecretKey.substring(0, 15)}...`);
+
+// Check if we're in the right directory
+const fs = require('fs');
+const path = require('path');
+const packageJsonPath = path.join(process.cwd(), 'package.json');
+
+if (!fs.existsSync(packageJsonPath)) {
+  console.log('❌ Error: Please run this script from the frontend directory');
+  console.log('   Usage: cd frontend && node ../scripts/test-stripe-config.js');
+  process.exit(1);
+}
 
 // Test 1: @stripe/stripe-js (frontend)
 try {
@@ -60,6 +72,7 @@ console.log(`   SKIP_ENV_VALIDATION: ${process.env.SKIP_ENV_VALIDATION ? '✅ Se
 console.log('\n🚀 Simulating API Route Processing:');
 try {
   // This simulates what happens when Next.js processes API routes during build
+  const Stripe = require('stripe');
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
     apiVersion: '2023-10-16',
   });
@@ -69,6 +82,24 @@ try {
   
 } catch (error) {
   console.log(`❌ API route processing would fail: ${error.message}`);
+}
+
+// Test 5: Check Next.js build compatibility
+console.log('\n🏗️  Next.js Build Compatibility Check:');
+try {
+  // Test what Next.js does during static analysis
+  const testStripeInit = () => {
+    const Stripe = require('stripe');
+    return new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_dummy', {
+      apiVersion: '2023-10-16',
+    });
+  };
+  
+  const stripe = testStripeInit();
+  console.log('✅ Stripe initialization during build analysis would succeed');
+  
+} catch (error) {
+  console.log(`❌ Build analysis would fail: ${error.message}`);
 }
 
 console.log('\n' + '='.repeat(50));
