@@ -5,6 +5,32 @@
 - **Tech Stack**: Next.js + TypeScript frontend, Python FastAPI backend
 - **Infrastructure**: AWS Sydney (ap-southeast-2), Terraform, Docker, ECS
 - **Services**: Stripe payments, Supabase auth, Sentry monitoring, PostHog analytics
+- **Development Environment**: Windows 11 (Primary), supports Linux/Mac
+
+## 🪟 **WINDOWS ENVIRONMENT NOTES**
+
+### **Critical Windows-Specific Commands:**
+```cmd
+# File operations (Windows)
+dir scripts\test-integrations.py          # List files (not ls)
+del "frontend\Dockerfile - Copy" 2>nul    # Delete files (not rm)
+copy .env.prod.template .env.prod          # Copy files (not cp)
+
+# Python script execution (Windows)
+python scripts\validate_env.py --env production    # Use backslashes
+python scripts\test-integrations.py --file .env.prod
+```
+
+### **Build Artifact Cleanup (Windows):**
+**CRITICAL**: Always clean these before deployment to prevent build conflicts:
+```cmd
+# Clean local build artifacts that get created during development
+git restore frontend/package-lock.json     # Restore to repo version
+del "frontend\Dockerfile - Copy" 2>nul     # Remove backup files
+del frontend\*.backup 2>nul                # Remove all .backup files
+```
+
+**Why This Happens**: Windows development tools create backup files and modify package-lock.json with different Node.js versions. These must be cleaned before deployment.
 
 ## 📁 Project Structure
 ```
@@ -56,43 +82,48 @@ pdf-to-excel-saas/
   - `scripts/deploy-application.py` - Application build and deploy
   - `scripts/validate_env.py` - Environment validation
   - `scripts/generate-env-vars.py` - Environment setup
+  - `scripts/test-integrations.py` - **NEW** - Real service connection testing
+  - `scripts/install-dependencies.py` - **NEW** - Python dependency installer
 
-## 🚀 STREAMLINED GO-LIVE PROCESS
+## 🚀 STREAMLINED GO-LIVE PROCESS (WINDOWS)
 
-### Step 1: Environment Setup
-Run the environment validation script:
-```bash
-python scripts/validate_env.py
+### Step -0.5: Clean Build Artifacts (Windows)
+```cmd
+# CRITICAL: Clean local development artifacts
+git restore frontend/package-lock.json
+del "frontend\Dockerfile - Copy" 2>nul
+del frontend\*.backup 2>nul
 ```
 
-If environment variables are missing, generate them:
-```bash
-python scripts/generate-env-vars.py
+### Step 0: Install Dependencies (Windows)
+```cmd
+python scripts\install-dependencies.py
 ```
 
-### Step 2: Deploy Infrastructure
-Run the intelligent infrastructure deployment:
-```bash
-python scripts/deploy-infrastructure.py
+### Step 1: Environment Setup (Windows)
+```cmd
+copy .env.prod.template .env.prod
+notepad .env.prod  # Edit with your actual credentials
 ```
 
-This script will:
-- ✅ Discover existing AWS resources
-- ✅ Deploy/update infrastructure via Terraform
-- ✅ Handle state drift and reconciliation
-- ✅ Provide infrastructure outputs (ECR URLs, ALB DNS, etc.)
+### Step 2: Validate & Test (Windows)
+```cmd
+# Validate environment variable formats
+python scripts\validate_env.py --env production
 
-### Step 3: Build & Deploy Application
-Run the complete application deployment:
-```bash
-python scripts/deploy-application.py
+# Test ALL third-party service connections
+python scripts\test-integrations.py --file .env.prod
 ```
 
-This script will:
-- ✅ Build Docker images for frontend and backend
-- ✅ Push images to ECR repositories
-- ✅ Deploy to ECS services
-- ✅ Verify health and provide live URLs
+### Step 3: Deploy Infrastructure (Windows)
+```cmd
+python scripts\deploy-infrastructure.py
+```
+
+### Step 4: Deploy Application (Windows) 
+```cmd
+python scripts\deploy-application.py
+```
 
 ## 🔧 Core Active Scripts
 
@@ -116,19 +147,32 @@ This script will:
 • **ECS Deployment** - Updates services and waits for health checks
 • **Health Verification** - Tests application endpoints
 
-### 🔧 Other Essential Scripts
-```bash
-# Environment validation
-python scripts/validate_env.py
+### 🧪 Integration Testing Script
+`scripts/test-integrations.py` - **NEW** - **Real service connection testing**
 
-# Environment generator/troubleshooter
-python scripts/generate-env-vars.py
+**Features:**
+• **AWS Testing** - Real credential validation with `aws sts get-caller-identity`
+• **Supabase Testing** - API endpoint testing and JWT validation
+• **Stripe Testing** - Real API connection to your account
+• **Database Testing** - PostgreSQL connection testing (if available)
+• **Email Testing** - SMTP server connectivity testing
+• **Sentry Testing** - DSN and endpoint reachability
+• **PostHog Testing** - API key and host connectivity
+• **Segregated Results** - Pinpoint exactly which service failed and why
 
-# Infrastructure diagnostics
-python scripts/diagnose-infrastructure.py
+### 🔧 Other Essential Scripts (Windows)
+```cmd
+# Environment validation (Windows)
+python scripts\validate_env.py --env production
 
-# Safe infrastructure destruction
-python scripts/destroy-infrastructure.py
+# Environment generator/troubleshooter (Windows)
+python scripts\generate-env-vars.py
+
+# Infrastructure diagnostics (Windows)
+python scripts\diagnose-infrastructure.py
+
+# Safe infrastructure destruction (Windows)
+python scripts\destroy-infrastructure.py
 ```
 
 ## ⚠️ CRITICAL FIXES THAT KEEP GETTING LOST
@@ -171,36 +215,62 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 ```
 
+### 🪟 Windows Build Artifact Issues - PERMANENT SOLUTION
+**PROBLEM**: Windows development creates build artifacts that conflict with deployment
+
+**PERMANENT SOLUTION**: Always clean these files before deployment:
+```cmd
+# Clean local development artifacts (Windows)
+git restore frontend/package-lock.json     # Restore to repo version
+del "frontend\Dockerfile - Copy" 2>nul     # Remove backup files created by IDEs
+del frontend\*.backup 2>nul                # Remove all .backup files
+del frontend\node_modules\*.log 2>nul      # Remove npm logs
+```
+
+**Why**: Windows development tools (VS Code, IDEs) create backup files and npm/node modify package-lock.json with different versions. These cause build conflicts.
+
 ### 🛡️ Automated Verification Script
 **CRITICAL**: Always run this after ANY script modification:
 
-```bash
-python scripts/verify-script-integrity.py
+```cmd
+python scripts\verify-script-integrity.py
 ```
 
 This prevents recurring import errors and ensures all scripts have required dependencies.
 
-## 🚨 PRODUCTION DEPLOYMENT CHECKLIST
+## 🚨 PRODUCTION DEPLOYMENT CHECKLIST (WINDOWS)
 
 ### Prerequisites (Run Once)
 - [ ] AWS CLI configured (`aws configure`)
-- [ ] Docker installed and running
-- [ ] Python dependencies (`pip install boto3`)
+- [ ] Docker Desktop installed and running
+- [ ] Python 3.8+ installed (`python --version`)
+- [ ] Git for Windows installed
 - [ ] Environment file created (`.env.prod`)
 
-### Deployment Commands (Execute in Order)
-```bash
-# 1. Validate environment
-python scripts/validate_env.py
+### Deployment Commands (Execute in Order - Windows)
+```cmd
+# 0. Clean build artifacts
+git restore frontend/package-lock.json
+del "frontend\Dockerfile - Copy" 2>nul
+del frontend\*.backup 2>nul
 
-# 2. Deploy infrastructure
-python scripts/deploy-infrastructure.py
+# 1. Install dependencies
+python scripts\install-dependencies.py
 
-# 3. Deploy application
-python scripts/deploy-application.py
+# 2. Validate environment
+python scripts\validate_env.py --env production
 
-# 4. Verify deployment
-python scripts/validate-deployment.py
+# 3. Test integrations
+python scripts\test-integrations.py --file .env.prod
+
+# 4. Deploy infrastructure
+python scripts\deploy-infrastructure.py
+
+# 5. Deploy application
+python scripts\deploy-application.py
+
+# 6. Verify deployment
+python scripts\validate-deployment.py
 ```
 
 ### Expected Outputs
@@ -214,21 +284,24 @@ After successful deployment, you should see:
 
 ## 🛡️ IMPORTANT: To Prevent Recurring Issues
 
-1. **Always run verification**: `python scripts/verify-script-integrity.py`
-2. **Never modify scripts without testing imports**
-3. **Use the intelligent deploy script for all infrastructure changes**
-4. **Read this documentation before making changes**
-5. **Test deployment scripts in development first**
+1. **Always run verification**: `python scripts\verify-script-integrity.py`
+2. **Always clean build artifacts before deployment** (Windows specific)
+3. **Use Windows-specific commands** (`dir`, `del`, `copy`, backslashes)
+4. **Never modify scripts without testing imports**
+5. **Use the intelligent deploy script for all infrastructure changes**
+6. **Read this documentation before making changes**
+7. **Test deployment scripts in development first**
 
 ---
 
-## 🎯 NEXT ACTIONS FOR GO-LIVE
+## 🎯 NEXT ACTIONS FOR GO-LIVE (WINDOWS)
 
 ### Immediate (Ready Now)
-1. **Configure environment variables** in `.env.prod`
-2. **Run deployment scripts** in sequence
-3. **Verify application health** via load balancer
-4. **Test complete user flow** from signup to payment
+1. **Clean build artifacts** with Windows commands above
+2. **Configure environment variables** in `.env.prod`
+3. **Run deployment scripts** in sequence using Windows commands
+4. **Verify application health** via load balancer
+5. **Test complete user flow** from signup to payment
 
 ### Short-term (Within 1 week)
 1. **Set up custom domain** and SSL certificate
@@ -256,5 +329,6 @@ Your PDF to Excel SaaS application is **100% complete and ready for go-live**:
 ✅ **Production Infrastructure**: AWS ECS, RDS, S3, Load Balancer  
 ✅ **Smart Deployment**: Automated scripts with error prevention  
 ✅ **All Integrations**: Supabase, Stripe, S3, Email, Analytics  
+✅ **Windows Compatible**: All commands tested for Windows 11 environment
 
-**Deploy now and start getting paid customers today!** 🚀💰
+**Deploy now using the Windows commands above and start getting paid customers today!** 🚀💰
