@@ -1,0 +1,37 @@
+# Emergency Production Dockerfile - Simplified for Quick Deploy
+FROM node:18-alpine AS base
+WORKDIR /app
+
+# Copy package files
+COPY package.json package-lock.json* ./
+
+# Install all dependencies (not just production to avoid conflicts)
+RUN npm install --legacy-peer-deps
+
+# Copy source code
+COPY . .
+
+# Build the application
+ENV NODE_ENV=production
+RUN npm run build
+
+# Remove dev dependencies after build
+RUN npm prune --production --legacy-peer-deps
+
+# Create non-root user
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+# Change ownership of app directory
+RUN chown -R nextjs:nodejs /app
+USER nextjs
+
+# Expose port
+EXPOSE 3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:3000/api/health || exit 1
+
+# Start the application
+CMD ["npm", "start"]
