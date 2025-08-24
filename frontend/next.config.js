@@ -20,6 +20,16 @@ const nextConfig = {
   skipTrailingSlashRedirect: true,
   skipMiddlewareUrlNormalize: true,
   
+  // Images configuration
+  images: {
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: '**',
+      },
+    ],
+  },
+  
   // Custom webpack config to handle external packages
   webpack: (config, { isServer }) => {
     if (isServer) {
@@ -31,7 +41,7 @@ const nextConfig = {
         crypto: false
       }
       
-      // Externalize packages that should not be bundled
+      // Externalize packages that should not be bundled during build
       config.externals = config.externals || []
       if (Array.isArray(config.externals)) {
         config.externals.push('stripe')
@@ -45,6 +55,34 @@ const nextConfig = {
   
   // Handle external packages that shouldn't be bundled
   serverExternalPackages: ['@prisma/client', '@sentry/node', 'stripe'],
+  
+  // Redirect configuration for proper routing
+  async redirects() {
+    return []
+  },
+  
+  // Headers for security
+  async headers() {
+    return [
+      {
+        source: '/(.*)',
+        headers: [
+          {
+            key: 'X-Frame-Options',
+            value: 'DENY',
+          },
+          {
+            key: 'X-Content-Type-Options',
+            value: 'nosniff',
+          },
+          {
+            key: 'Referrer-Policy',
+            value: 'origin-when-cross-origin',
+          },
+        ],
+      },
+    ]
+  },
 }
 
 module.exports = nextConfig
