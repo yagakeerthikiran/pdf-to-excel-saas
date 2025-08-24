@@ -1,302 +1,448 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { formatDistanceToNow } from 'date-fns'
+import { createClientComponentClient } from '@/lib/supabase'
+import { apiClient } from '@/lib/api'
+import PdfUpload from './PdfUpload'
 
-interface FileItem {
+interface UserProfile {
   id: string
-  filename: string
-  size: number
-  status: 'uploaded' | 'processing' | 'converted' | 'failed'
+  email: string
+  subscription_tier: string
+  conversions_remaining: number
   created_at: string
-  error_message?: string
-  pdf_download_url?: string
-  excel_download_url?: string
 }
 
-interface UserStats {
-  subscription_tier: string
-  daily_conversions: number
-  monthly_conversions: number
-  total_files: number
-  converted_files: number
-  conversion_rate: number
+interface Conversion {
+  id: string
+  filename: string
+  status: string
+  created_at: string
+  download_url?: string
 }
 
 export default function Dashboard() {
-  const [files, setFiles] = useState<FileItem[]>([])
-  const [stats, setStats] = useState<UserStats | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [user, setUser] = useState(null)
+  const [profile, setProfile] = useState<UserProfile | null>(null)
+  const [conversions, setConversions] = useState<Conversion[]>([])
+  const [activeTab, setActiveTab] = useState<'upload' | 'history' | 'settings'>('upload')
+  const [isLoading, setIsLoading] = useState(true)
+  const [isCancelling, setIsCancelling] = useState(false)
+  
+  const supabase = createClientComponentClient()
 
   useEffect(() => {
-    fetchFiles()
-    fetchStats()
-  }, [])
-
-  const fetchFiles = async () => {
-    try {
-      const response = await fetch('/api/files')
-      if (!response.ok) throw new Error('Failed to fetch files')
-      const data = await response.json()
-      setFiles(data)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load files')
+    const initialize = async () => {
+      try {
+        // Check auth status
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user) {
+          window.location.href = '/auth/signin'
+          return
+        }
+        
+        setUser(user)
+        
+        // Load profile and conversions
+        const [profileData, conversionsData] = await Promise.all([
+          apiClient.getProfile().catch(() => null),
+          apiClient.getConversions().catch(() => [])
+        ])
+        
+        setProfile(profileData)
+        setConversions(conversionsData)
+      } catch (error) {
+        console.error('Dashboard initialization failed:', error)
+      } finally {
+        setIsLoading(false)
+      }
     }
+
+    initialize()
+  }, [supabase])
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut()
+    window.location.href = '/'
   }
 
-  const fetchStats = async () => {
+  const handleCancelSubscription = async () => {
+    if (!confirm('Are you sure you want to cancel your subscription? You\'ll lose Pro features at the end of your billing period.')) {
+      return
+    }
+
+    setIsCancelling(true)
     try {
-      const response = await fetch('/api/user/stats')
-      if (!response.ok) throw new Error('Failed to fetch stats')
-      const data = await response.json()
-      setStats(data)
-    } catch (err) {
-      console.error('Failed to load stats:', err)
+      await apiClient.cancelSubscription()
+      alert('Subscription cancelled successfully. You\'ll continue to have Pro access until the end of your billing period.')
+      
+      // Refresh profile
+      const profileData = await apiClient.getProfile()
+      setProfile(profileData)
+    } catch (error: any) {
+      alert(`Failed to cancel subscription: ${error.message}`)
     } finally {
-      setLoading(false)
+      setIsCancelling(false)
     }
   }
 
-  const getStatusBadge = (status: string) => {
-    const statusConfig = {
-      uploaded: { color: 'bg-gray-100 text-gray-800', text: 'Uploaded' },
-      processing: { color: 'bg-blue-100 text-blue-800', text: 'Processing' },
-      converted: { color: 'bg-green-100 text-green-800', text: 'Converted' },
-      failed: { color: 'bg-red-100 text-red-800', text: 'Failed' }
-    }
-    
-    const config = statusConfig[status as keyof typeof statusConfig] || statusConfig.uploaded
-    
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-AU', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  }
+
+  if (isLoading) {
     return (
-      <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${config.color}`}>
-        {config.text}
-      </span>
-    )
-  }
-
-  const formatFileSize = (bytes: number) => {
-    if (bytes === 0) return '0 Bytes'
-    const k = 1024
-    const sizes = ['Bytes', 'KB', 'MB', 'GB']
-    const i = Math.floor(Math.log(bytes) / Math.log(k))
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
-  }
-
-  const handleDownload = (url: string, filename: string) => {
-    const link = document.createElement('a')
-    link.href = url
-    link.download = filename
-    link.target = '_blank'
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-  }
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading dashboard...</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading your dashboard...</p>
         </div>
       </div>
     )
   }
 
+  const isPro = profile?.subscription_tier === 'pro'
+  const remainingConversions = profile?.conversions_remaining || 0
+
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-          <p className="mt-2 text-gray-600">Manage your PDF conversions</p>
+      {/* Header */}
+      <header className="bg-white shadow-sm border-b">
+        <div className="max-w-7xl mx-auto px-4 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-4">
+              <h1 className="text-2xl font-bold text-gray-900">
+                PDF to Excel Dashboard
+              </h1>
+              <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                isPro 
+                  ? 'bg-blue-100 text-blue-800' 
+                  : 'bg-gray-100 text-gray-800'
+              }`}>
+                {isPro ? 'Pro' : 'Free'} Plan
+              </span>
+            </div>
+
+            <div className="flex items-center space-x-4">
+              <div className="text-sm text-gray-600">
+                <span className="font-medium">{remainingConversions}</span> conversions left
+              </div>
+              
+              <button
+                onClick={handleSignOut}
+                className="text-sm text-gray-600 hover:text-gray-900 transition-colors"
+              >
+                Sign Out
+              </button>
+            </div>
+          </div>
         </div>
+      </header>
 
-        {/* Stats Cards */}
-        {stats && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-            <div className="bg-white rounded-lg shadow p-6">
-              <div className="flex items-center">
-                <div className="flex-shrink-0">
-                  <div className="w-8 h-8 bg-indigo-500 rounded-md flex items-center justify-center">
-                    <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20">
-                      <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  </div>
-                </div>
-                <div className="ml-5 w-0 flex-1">
-                  <dl>
-                    <dt className="text-sm font-medium text-gray-500 truncate">Plan</dt>
-                    <dd className="text-lg font-medium text-gray-900 capitalize">{stats.subscription_tier}</dd>
-                  </dl>
-                </div>
-              </div>
-            </div>
+      {/* Navigation Tabs */}
+      <nav className="bg-white border-b">
+        <div className="max-w-7xl mx-auto px-4">
+          <div className="flex space-x-8">
+            {[
+              { key: 'upload', label: 'Convert PDFs', icon: '📄' },
+              { key: 'history', label: 'History', icon: '📊' },
+              { key: 'settings', label: 'Settings', icon: '⚙️' }
+            ].map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => setActiveTab(tab.key as any)}
+                className={`py-4 px-2 border-b-2 font-medium text-sm transition-colors ${
+                  activeTab === tab.key
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <span className="mr-2">{tab.icon}</span>
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </nav>
 
-            <div className="bg-white rounded-lg shadow p-6">
-              <div className="flex items-center">
-                <div className="flex-shrink-0">
-                  <div className="w-8 h-8 bg-green-500 rounded-md flex items-center justify-center">
-                    <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20">
-                      <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3z" />
-                    </svg>
-                  </div>
-                </div>
-                <div className="ml-5 w-0 flex-1">
-                  <dl>
-                    <dt className="text-sm font-medium text-gray-500 truncate">Today's Conversions</dt>
-                    <dd className="text-lg font-medium text-gray-900">{stats.daily_conversions}/5</dd>
-                  </dl>
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white rounded-lg shadow p-6">
-              <div className="flex items-center">
-                <div className="flex-shrink-0">
-                  <div className="w-8 h-8 bg-blue-500 rounded-md flex items-center justify-center">
-                    <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20">
-                      <path d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zM3 10a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6zM14 9a1 1 0 00-1 1v6a1 1 0 001 1h2a1 1 0 001-1v-6a1 1 0 00-1-1h-2z" />
-                    </svg>
-                  </div>
-                </div>
-                <div className="ml-5 w-0 flex-1">
-                  <dl>
-                    <dt className="text-sm font-medium text-gray-500 truncate">Total Files</dt>
-                    <dd className="text-lg font-medium text-gray-900">{stats.total_files}</dd>
-                  </dl>
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white rounded-lg shadow p-6">
-              <div className="flex items-center">
-                <div className="flex-shrink-0">
-                  <div className="w-8 h-8 bg-purple-500 rounded-md flex items-center justify-center">
-                    <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20">
-                      <path d="M2.003 5.884L10 9.882l7.997-3.998A2 2 0 0016 4H4a2 2 0 00-1.997 1.884z" />
-                      <path d="M18 8.118l-8 4-8-4V14a2 2 0 002 2h12a2 2 0 002-2V8.118z" />
-                    </svg>
-                  </div>
-                </div>
-                <div className="ml-5 w-0 flex-1">
-                  <dl>
-                    <dt className="text-sm font-medium text-gray-500 truncate">Success Rate</dt>
-                    <dd className="text-lg font-medium text-gray-900">{stats.conversion_rate.toFixed(1)}%</dd>
-                  </dl>
-                </div>
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto px-4 py-8">
+        {/* Usage Warning */}
+        {remainingConversions <= 5 && remainingConversions > 0 && (
+          <div className="mb-8 bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+            <div className="flex items-center">
+              <span className="text-yellow-600 mr-3">⚠️</span>
+              <div className="flex-1">
+                <h3 className="text-sm font-medium text-yellow-800">
+                  Running Low on Conversions
+                </h3>
+                <p className="text-sm text-yellow-700 mt-1">
+                  You have {remainingConversions} conversions left. 
+                  {!isPro && (
+                    <span>
+                      {' '}
+                      <a href="/pricing" className="font-medium underline hover:no-underline">
+                        Upgrade to Pro
+                      </a>
+                      {' '}for unlimited conversions.
+                    </span>
+                  )}
+                </p>
               </div>
             </div>
           </div>
         )}
 
-        {/* Files Table */}
-        <div className="bg-white shadow rounded-lg">
-          <div className="px-6 py-4 border-b border-gray-200">
-            <h2 className="text-lg font-medium text-gray-900">Your Files</h2>
+        {/* No conversions left */}
+        {remainingConversions === 0 && (
+          <div className="mb-8 bg-red-50 border border-red-200 rounded-lg p-4">
+            <div className="flex items-center">
+              <span className="text-red-600 mr-3">🚫</span>
+              <div className="flex-1">
+                <h3 className="text-sm font-medium text-red-800">
+                  No Conversions Remaining
+                </h3>
+                <p className="text-sm text-red-700 mt-1">
+                  You've used all your conversions for this month. 
+                  <a href="/pricing" className="font-medium underline hover:no-underline ml-1">
+                    Upgrade to Pro
+                  </a>
+                  {' '}to continue converting PDFs.
+                </p>
+              </div>
+            </div>
           </div>
+        )}
 
-          {error && (
-            <div className="p-6 text-center">
-              <p className="text-red-600">{error}</p>
-              <button 
-                onClick={fetchFiles}
-                className="mt-2 text-indigo-600 hover:text-indigo-500"
-              >
-                Try again
-              </button>
-            </div>
-          )}
+        {/* Tab Content */}
+        {activeTab === 'upload' && (
+          <div>
+            {remainingConversions > 0 ? (
+              <PdfUpload />
+            ) : (
+              <div className="text-center py-12">
+                <p className="text-gray-600 mb-4">
+                  You need more conversions to upload files.
+                </p>
+                <a
+                  href="/pricing"
+                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
+                >
+                  View Pricing Plans
+                </a>
+              </div>
+            )}
+          </div>
+        )}
 
-          {!error && files.length === 0 && (
-            <div className="p-6 text-center">
-              <p className="text-gray-500">No files uploaded yet.</p>
-              <a href="/" className="mt-2 text-indigo-600 hover:text-indigo-500">
-                Upload your first PDF →
-              </a>
-            </div>
-          )}
+        {activeTab === 'history' && (
+          <div>
+            <div className="bg-white rounded-lg shadow-sm border">
+              <div className="px-6 py-4 border-b">
+                <h2 className="text-lg font-semibold text-gray-900">
+                  Conversion History
+                </h2>
+                <p className="text-sm text-gray-600 mt-1">
+                  Your recent PDF to Excel conversions
+                </p>
+              </div>
 
-          {!error && files.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      File
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Status
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Size
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Created
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {files.map((file) => (
-                    <tr key={file.id} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                          <div className="flex-shrink-0 h-10 w-10">
-                            <div className="h-10 w-10 rounded-lg bg-red-100 flex items-center justify-center">
-                              <svg className="h-6 w-6 text-red-600" fill="currentColor" viewBox="0 0 20 20">
-                                <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
-                              </svg>
-                            </div>
-                          </div>
-                          <div className="ml-4">
-                            <div className="text-sm font-medium text-gray-900">{file.filename}</div>
-                            {file.error_message && (
-                              <div className="text-sm text-red-500">{file.error_message}</div>
-                            )}
+              {conversions.length === 0 ? (
+                <div className="px-6 py-12 text-center">
+                  <div className="text-gray-400 mb-4">
+                    <svg className="mx-auto h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                  </div>
+                  <h3 className="text-sm font-medium text-gray-900 mb-1">
+                    No conversions yet
+                  </h3>
+                  <p className="text-sm text-gray-600 mb-4">
+                    Start by converting your first PDF to Excel
+                  </p>
+                  <button
+                    onClick={() => setActiveTab('upload')}
+                    className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
+                  >
+                    Convert Your First PDF
+                  </button>
+                </div>
+              ) : (
+                <div className="divide-y">
+                  {conversions.map((conversion) => (
+                    <div key={conversion.id} className="px-6 py-4">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-3">
+                          <div className={`w-3 h-3 rounded-full ${
+                            conversion.status === 'completed' ? 'bg-green-400' :
+                            conversion.status === 'processing' ? 'bg-yellow-400' :
+                            conversion.status === 'failed' ? 'bg-red-400' :
+                            'bg-gray-400'
+                          }`} />
+                          
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">
+                              {conversion.filename}
+                            </p>
+                            <p className="text-xs text-gray-600">
+                              {formatDate(conversion.created_at)} • Status: {conversion.status}
+                            </p>
                           </div>
                         </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        {getStatusBadge(file.status)}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {formatFileSize(file.size)}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {formatDistanceToNow(new Date(file.created_at), { addSuffix: true })}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                        <div className="flex space-x-2">
-                          {file.pdf_download_url && (
-                            <button
-                              onClick={() => handleDownload(file.pdf_download_url!, file.filename)}
-                              className="text-indigo-600 hover:text-indigo-900"
-                            >
-                              PDF
-                            </button>
-                          )}
-                          {file.excel_download_url && (
-                            <button
-                              onClick={() => handleDownload(file.excel_download_url!, file.filename.replace('.pdf', '.xlsx'))}
-                              className="text-green-600 hover:text-green-900"
-                            >
-                              Excel
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
+
+                        {conversion.status === 'completed' && conversion.download_url && (
+                          <a
+                            href={conversion.download_url}
+                            download
+                            className="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded text-white bg-green-600 hover:bg-green-700"
+                          >
+                            Download
+                          </a>
+                        )}
+                      </div>
+                    </div>
                   ))}
-                </tbody>
-              </table>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </div>
+          </div>
+        )}
+
+        {activeTab === 'settings' && (
+          <div className="space-y-6">
+            {/* Account Information */}
+            <div className="bg-white rounded-lg shadow-sm border">
+              <div className="px-6 py-4 border-b">
+                <h2 className="text-lg font-semibold text-gray-900">
+                  Account Information
+                </h2>
+              </div>
+              
+              <div className="px-6 py-4 space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Email Address
+                  </label>
+                  <p className="mt-1 text-sm text-gray-900">
+                    {user?.email}
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Account Created
+                  </label>
+                  <p className="mt-1 text-sm text-gray-900">
+                    {profile?.created_at ? formatDate(profile.created_at) : 'Unknown'}
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Current Plan
+                  </label>
+                  <div className="mt-1 flex items-center space-x-2">
+                    <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                      isPro 
+                        ? 'bg-blue-100 text-blue-800' 
+                        : 'bg-gray-100 text-gray-800'
+                    }`}>
+                      {isPro ? 'Professional' : 'Free'}
+                    </span>
+                    
+                    {!isPro && (
+                      <a
+                        href="/pricing"
+                        className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+                      >
+                        Upgrade to Pro
+                      </a>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Conversions Remaining
+                  </label>
+                  <p className="mt-1 text-sm text-gray-900">
+                    {remainingConversions} conversions left this month
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Subscription Management */}
+            {isPro && (
+              <div className="bg-white rounded-lg shadow-sm border">
+                <div className="px-6 py-4 border-b">
+                  <h2 className="text-lg font-semibold text-gray-900">
+                    Subscription Management
+                  </h2>
+                </div>
+                
+                <div className="px-6 py-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-medium text-gray-900">
+                        Professional Plan
+                      </h3>
+                      <p className="text-sm text-gray-600 mt-1">
+                        $29/month • 500 conversions per month
+                      </p>
+                    </div>
+
+                    <button
+                      onClick={handleCancelSubscription}
+                      disabled={isCancelling}
+                      className="px-4 py-2 border border-red-300 text-sm font-medium text-red-700 bg-white hover:bg-red-50 rounded-md disabled:opacity-50"
+                    >
+                      {isCancelling ? 'Cancelling...' : 'Cancel Subscription'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Danger Zone */}
+            <div className="bg-white rounded-lg shadow-sm border border-red-200">
+              <div className="px-6 py-4 border-b border-red-200">
+                <h2 className="text-lg font-semibold text-red-900">
+                  Danger Zone
+                </h2>
+              </div>
+              
+              <div className="px-6 py-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-medium text-red-900">
+                      Delete Account
+                    </h3>
+                    <p className="text-sm text-red-700 mt-1">
+                      Permanently delete your account and all associated data.
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      alert('Account deletion is not implemented yet. Please contact support.')
+                    }}
+                    className="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-md hover:bg-red-700"
+                  >
+                    Delete Account
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
     </div>
   )
 }
