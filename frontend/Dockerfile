@@ -1,4 +1,4 @@
-# Frontend Dockerfile - Build without Stripe API routes (Complete Removal)
+# Frontend Dockerfile - Production Ready
 FROM node:20-alpine AS base
 
 # Install dependencies only when needed
@@ -10,7 +10,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci --only=production && npm cache clean --force
 
-# Development dependencies for building
+# Build stage
 FROM base AS builder
 WORKDIR /app
 
@@ -33,20 +33,7 @@ RUN echo "NEXT_TELEMETRY_DISABLED=1" >> .env.local
 # Fix for lightningcss platform issues on Alpine Linux
 RUN npm rebuild lightningcss --platform=linux --arch=x64 || echo "lightningcss rebuild failed, continuing..."
 
-# Backup and completely remove Stripe API routes to prevent build analysis
-RUN mkdir -p /tmp/stripe-backup
-RUN find . -path "*/api/stripe*" -type f -exec cp {} /tmp/stripe-backup/ \; 2>/dev/null || echo "No stripe API files found"
-RUN find . -path "*/api/stripe*" -type d -exec rm -rf {} \; 2>/dev/null || echo "No stripe API directories found"
-RUN find . -path "*/api/stripe*" -type f -exec rm -f {} \; 2>/dev/null || echo "No stripe API files found"
-
-# Also remove any other problematic files that might import Stripe
-RUN find . -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" | xargs grep -l "from.*stripe\|import.*stripe" 2>/dev/null | while read file; do
-  echo "Temporarily removing file with Stripe imports: $file"
-  cp "$file" "$file.stripe-backup" 2>/dev/null || true
-  echo "// Stripe imports removed during Docker build" > "$file"
-done || echo "No files with Stripe imports found"
-
-# Build the application without Stripe dependencies
+# Build the application
 RUN npm run build
 
 # Production image
@@ -65,27 +52,24 @@ RUN adduser --system --uid 1001 nextjs
 # Copy public folder
 COPY --from=builder /app/public ./public
 
-# Set proper permissions for nextjs user
+# Set proper permissions for prerender cache
 RUN mkdir .next
 RUN chown nextjs:nodejs .next
 
 # Copy built application
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone* ./ || true
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./ || true
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static || true
 COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
 COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
 
-# Install only production dependencies for runtime (including Stripe)
+# Install only production dependencies for runtime
 COPY --from=deps --chown=nextjs:nodejs /app/node_modules ./node_modules
-
-# Copy original source files (with Stripe) for runtime API routes
-COPY --chown=nextjs:nodejs . ./
 
 USER nextjs
 
 EXPOSE 3000
 
-# Health check using built-in node/alpine tools
+# Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1
 
