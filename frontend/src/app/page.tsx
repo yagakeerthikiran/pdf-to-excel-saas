@@ -1,8 +1,36 @@
 import Link from "next/link";
 
+const DebuggingInfo = () => {
+  return (
+    <div style={{
+      backgroundColor: '#111',
+      color: '#eee',
+      padding: '20px',
+      border: '2px solid red',
+      margin: '20px',
+      fontFamily: 'monospace',
+      fontSize: '14px',
+      whiteSpace: 'pre-wrap',
+      zIndex: 9999,
+      position: 'relative',
+    }}>
+      <h2 style={{ color: 'red', marginBottom: '10px' }}>--- JULES'S DEBUGGING PANEL ---</h2>
+      <p>This is a temporary panel to verify environment variables. It will be removed once the issue is fixed.</p>
+      <hr style={{ margin: '10px 0' }} />
+      <p><strong>NEXT_PUBLIC_SUPABASE_URL:</strong> "{process.env.NEXT_PUBLIC_SUPABASE_URL}"</p>
+      <p><strong>NEXT_PUBLIC_SUPABASE_ANON_KEY:</strong> "{process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}"</p>
+      <p><strong>NEXT_PUBLIC_BACKEND_URL:</strong> "{process.env.NEXT_PUBLIC_BACKEND_URL}"</p>
+      <hr style={{ margin: '10px 0' }} />
+      <p><strong>Instructions:</strong> Please compare these values character-for-character with the values in your Supabase dashboard and AWS Load Balancer URL. Check for typos, extra spaces, or missing characters.</p>
+    </div>
+  );
+};
+
+
 export default function HomePage() {
   return (
     <div className="min-h-screen">
+      <DebuggingInfo />
       {/* Navigation */}
       <header className="bg-white shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
