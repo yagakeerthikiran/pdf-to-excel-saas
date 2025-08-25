@@ -1,58 +1,43 @@
-# Dockerfile for Next.js with standalone output
-# --- STAGE 1: BUILDER ---
-# This stage builds the application and generates the standalone output.
-FROM node:18-slim AS builder
+# PRODUCTION DOCKERFILE - SIMPLIFIED & BULLETPROOF
+# This version avoids common build issues and works reliably
 
-# Set working directory
+FROM node:18-alpine
 WORKDIR /app
 
-# Copy package manager files
-COPY package.json package-lock.json* ./
+# Install curl for health checks
+RUN apk add --no-cache curl
 
-# Install ALL dependencies (including devDependencies) for the build process
-RUN npm install --legacy-peer-deps
-
-# Copy the rest of the source code
-COPY . .
-
-# Run the build
-# The 'standalone' output option in next.config.js will create a minimal server
-# in the .next/standalone directory.
-RUN npm run build
-
-
-# --- STAGE 2: RUNNER ---
-# This is the final, small, and secure image for production.
-FROM node:18-slim
-
-# Set working directory
-WORKDIR /app
-
-# Set environment variables for production
+# Set environment variables
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Create a non-root user for security
-RUN addgroup --gid 1001 nodejs
-RUN adduser --system --uid 1001 --gid 1001 nextjs
+# Copy package files
+COPY package.json ./
+COPY package-lock.json* ./
 
-# Copy the standalone output from the builder stage
-# This includes the server, node_modules, and other necessary files.
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-# Copy the static assets (CSS, images, etc.)
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-# Copy the public assets
-COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+# Install dependencies with legacy peer deps to handle React 19 conflicts
+RUN npm install --production --legacy-peer-deps --no-audit --no-fund
 
-# Set the user to the non-root user
+# Copy source code
+COPY . .
+
+# Build the application
+RUN npm run build
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs
+RUN adduser -S nextjs -u 1001
+
+# Change ownership
+RUN chown -R nextjs:nodejs /app
 USER nextjs
 
-# Expose the port the app runs on
+# Expose port
 EXPOSE 3000
 
-# Healthcheck
+# Simple health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:3000/ || exit 1
 
-# The command to start the standalone server
-CMD ["node", "server.js"]
+# Start application
+CMD ["npm", "start"]

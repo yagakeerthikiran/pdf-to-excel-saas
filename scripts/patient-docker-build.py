@@ -120,7 +120,6 @@ def build_and_push_patient(service_name, dockerfile_name, account_id, region):
     
     if not run_command_patient([
         'docker', 'build',
-        '--no-cache',  # Prevent using stale cache layers
         '--progress=plain',  # Show detailed build progress
         '-f', dockerfile_name,
         '-t', local_tag,
