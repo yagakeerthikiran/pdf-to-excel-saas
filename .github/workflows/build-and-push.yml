@@ -1,0 +1,69 @@
+name: Build and Push to ECR
+
+on:
+  push:
+    branches:
+      - 'feat/infrastructure-clean'
+  workflow_dispatch: # Allows manual triggering
+
+env:
+  AWS_REGION: ap-southeast-2
+  ECR_REGISTRY: 654499586766.dkr.ecr.ap-southeast-2.amazonaws.com
+  ECR_REPOSITORY_FRONTEND: pdf-excel-saas-frontend
+  ECR_REPOSITORY_BACKEND: pdf-excel-saas-backend
+  IMAGE_TAG: latest
+
+jobs:
+  build-and-push-frontend:
+    name: Build and Push Frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and push frontend image
+        run: |
+          docker build \
+            --file ./frontend/Dockerfile.simple \
+            --tag ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }} \
+            ./frontend
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }}
+
+  build-and-push-backend:
+    name: Build and Push Backend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and push backend image
+        run: |
+          docker build \
+            --file ./backend/Dockerfile.simple \
+            --tag ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }} \
+            ./backend
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }}
