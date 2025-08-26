@@ -10,3 +10,5 @@ This caused routes under `src/app/` to be ignored in production.
 
 ```powershell
 pwsh -File scripts/move-src-app-to-app.ps1 -FrontendRoot frontend
+# or in Windows PowerShell:
+& .\scripts\move-src-app-to-app.ps1 -FrontendRoot frontend
