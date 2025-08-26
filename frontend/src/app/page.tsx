@@ -1,6 +1,12 @@
 import Link from "next/link";
 
 export default function HomePage() {
+  const buildTimestamp = new Date().toLocaleString("en-AU", {
+    timeZone: "Australia/Sydney",
+    dateStyle: "full",
+    timeStyle: "full",
+  });
+
   return (
     <div className="min-h-screen">
       {/* Navigation */}
@@ -36,7 +42,7 @@ export default function HomePage() {
       </header>
 
       {/* Hero Section */}
-      <section className="bg-gradient-to-r from-blue-600 to-purple-700 min-h-screen flex items-center justify-center text-white">
+      <section className="bg-gradient-to-r from-green-600 to-blue-700 min-h-screen flex items-center justify-center text-white">
         <div className="max-w-7xl mx-auto px-4 text-center">
           <h1 className="text-5xl md:text-7xl font-bold mb-6">
             PDF to Excel
@@ -64,10 +70,10 @@ export default function HomePage() {
           </div>
           
           <div className="mt-12 bg-white/10 backdrop-blur-sm rounded-lg p-6 max-w-md mx-auto">
-            <h3 className="text-lg font-semibold mb-2">🚀 Now Live in Australia</h3>
+            <h3 className="text-lg font-semibold mb-2">🚀 Build Timestamp for Debugging</h3>
             <p className="text-gray-200 text-sm">
-              Professional PDF to Excel conversion service. 
-              Built for Australian businesses with local data processing.
+              This page was built on: <br />
+              <strong className="text-yellow-300">{buildTimestamp}</strong>
             </p>
           </div>
         </div>
