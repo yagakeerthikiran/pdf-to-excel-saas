@@ -1,3 +1,5 @@
+﻿export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
 import AuthForm from '@/components/AuthForm'
 
 export default function SignInPage() {
@@ -7,3 +9,4 @@ export default function SignInPage() {
     </div>
   )
 }
+

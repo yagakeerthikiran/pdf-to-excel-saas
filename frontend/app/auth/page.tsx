@@ -1,3 +1,5 @@
+﻿export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
 'use client'
 
 import { createClient } from '@/lib/supabase/client'
@@ -20,3 +22,4 @@ export default function AuthPage() {
     </div>
   )
 }
+

@@ -1,3 +1,5 @@
+﻿export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
 import AuthForm from '@/components/AuthForm'
 
 export default function SignUpPage() {
@@ -7,3 +9,4 @@ export default function SignUpPage() {
     </div>
   )
 }
+
