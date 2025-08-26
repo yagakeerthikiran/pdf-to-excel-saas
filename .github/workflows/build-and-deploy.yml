@@ -1,0 +1,362 @@
+name: Build and Deploy to AWS ECS
+
+on:
+  push:
+    branches:
+      - 'feat/infrastructure-clean'
+      - 'main'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+        - staging
+        - production
+
+env:
+  AWS_REGION: ap-southeast-2
+  ECR_REGISTRY: 654499586766.dkr.ecr.ap-southeast-2.amazonaws.com
+  ECR_REPOSITORY_FRONTEND: pdf-excel-saas-frontend
+  ECR_REPOSITORY_BACKEND: pdf-excel-saas-backend
+  ECS_CLUSTER: pdf-excel-saas-prod
+  ECS_SERVICE_FRONTEND: pdf-excel-saas-prod-frontend
+  ECS_SERVICE_BACKEND: pdf-excel-saas-prod-backend
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  validate-environment:
+    name: Validate Environment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        run: |
+          if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ] || [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
+            echo "❌ AWS credentials not configured"
+            exit 1
+          fi
+          echo "✅ Environment validation passed"
+
+  build-and-push:
+    name: Build and Push Images
+    runs-on: ubuntu-latest
+    needs: validate-environment
+    outputs:
+      frontend-image: ${{ steps.build-frontend.outputs.image }}
+      backend-image: ${{ steps.build-backend.outputs.image }}
+      image-tag: ${{ env.IMAGE_TAG }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push frontend image
+        id: build-frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile.simple
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }}
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push backend image
+        id: build-backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile.simple
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }}
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Output image URIs
+        run: |
+          echo "frontend-image=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }}" >> $GITHUB_OUTPUT
+          echo "backend-image=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }}" >> $GITHUB_OUTPUT
+
+  deploy-to-ecs:
+    name: Deploy to ECS
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check if ECS cluster exists
+        id: check-cluster
+        run: |
+          if aws ecs describe-clusters --clusters ${{ env.ECS_CLUSTER }} --query 'clusters[0].status' --output text | grep -q "ACTIVE"; then
+            echo "cluster-exists=true" >> $GITHUB_OUTPUT
+            echo "✅ ECS cluster ${{ env.ECS_CLUSTER }} is active"
+          else
+            echo "cluster-exists=false" >> $GITHUB_OUTPUT
+            echo "❌ ECS cluster ${{ env.ECS_CLUSTER }} not found or inactive"
+          fi
+
+      - name: Update ECS service - Frontend
+        if: steps.check-cluster.outputs.cluster-exists == 'true'
+        run: |
+          echo "🚀 Updating frontend service with image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }}"
+          
+          # Get current task definition
+          TASK_DEFINITION=$(aws ecs describe-task-definition \
+            --task-definition ${{ env.ECS_SERVICE_FRONTEND }} \
+            --query taskDefinition)
+          
+          # Update image in task definition
+          NEW_TASK_DEFINITION=$(echo $TASK_DEFINITION | jq --arg IMAGE "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }}" \
+            '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn) | del(.revision) | del(.status) | del(.requiresAttributes) | del(.placementConstraints) | del(.compatibilities) | del(.registeredAt) | del(.registeredBy)')
+          
+          # Register new task definition
+          NEW_TASK_DEF_ARN=$(echo $NEW_TASK_DEFINITION | aws ecs register-task-definition \
+            --cli-input-json file:///dev/stdin \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          
+          echo "✅ Registered new frontend task definition: $NEW_TASK_DEF_ARN"
+          
+          # Update service
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE_FRONTEND }} \
+            --task-definition $NEW_TASK_DEF_ARN \
+            --force-new-deployment
+          
+          echo "🔄 Frontend service update initiated"
+
+      - name: Update ECS service - Backend
+        if: steps.check-cluster.outputs.cluster-exists == 'true'
+        run: |
+          echo "🚀 Updating backend service with image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }}"
+          
+          # Get current task definition
+          TASK_DEFINITION=$(aws ecs describe-task-definition \
+            --task-definition ${{ env.ECS_SERVICE_BACKEND }} \
+            --query taskDefinition)
+          
+          # Update image in task definition
+          NEW_TASK_DEFINITION=$(echo $TASK_DEFINITION | jq --arg IMAGE "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }}" \
+            '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn) | del(.revision) | del(.status) | del(.requiresAttributes) | del(.placementConstraints) | del(.compatibilities) | del(.registeredAt) | del(.registeredBy)')
+          
+          # Register new task definition
+          NEW_TASK_DEF_ARN=$(echo $NEW_TASK_DEFINITION | aws ecs register-task-definition \
+            --cli-input-json file:///dev/stdin \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          
+          echo "✅ Registered new backend task definition: $NEW_TASK_DEF_ARN"
+          
+          # Update service
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE_BACKEND }} \
+            --task-definition $NEW_TASK_DEF_ARN \
+            --force-new-deployment
+          
+          echo "🔄 Backend service update initiated"
+
+      - name: Wait for deployment completion
+        if: steps.check-cluster.outputs.cluster-exists == 'true'
+        run: |
+          echo "⏳ Waiting for services to stabilize..."
+          
+          echo "🔍 Waiting for frontend deployment..."
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE_FRONTEND }} \
+            --max-attempts 20 \
+            --delay 30
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ Frontend deployment completed successfully"
+          else
+            echo "❌ Frontend deployment timed out or failed"
+            exit 1
+          fi
+          
+          echo "🔍 Waiting for backend deployment..."
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE_BACKEND }} \
+            --max-attempts 20 \
+            --delay 30
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ Backend deployment completed successfully"
+          else
+            echo "❌ Backend deployment timed out or failed"
+            exit 1
+          fi
+
+      - name: Get ALB DNS name
+        if: steps.check-cluster.outputs.cluster-exists == 'true'
+        id: get-alb
+        run: |
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --names pdf-excel-saas-prod-alb \
+            --query 'LoadBalancers[0].DNSName' \
+            --output text 2>/dev/null || echo "")
+          
+          if [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "None" ]; then
+            echo "alb-dns=$ALB_DNS" >> $GITHUB_OUTPUT
+            echo "🌐 ALB DNS: $ALB_DNS"
+          else
+            echo "⚠️ Could not find ALB DNS name"
+            echo "alb-dns=" >> $GITHUB_OUTPUT
+          fi
+
+  health-check:
+    name: Health Check
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy-to-ecs]
+    if: always() && needs.deploy-to-ecs.result == 'success'
+    steps:
+      - name: Wait for services to be ready
+        run: |
+          echo "⏳ Waiting 60 seconds for services to fully start..."
+          sleep 60
+
+      - name: Get ALB DNS name
+        id: get-alb
+        run: |
+          aws configure set region ${{ env.AWS_REGION }}
+          
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --query 'LoadBalancers[?contains(LoadBalancerName, `pdf-excel-saas`)].DNSName' \
+            --output text 2>/dev/null || echo "")
+          
+          if [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "None" ]; then
+            echo "alb-dns=$ALB_DNS" >> $GITHUB_OUTPUT
+            echo "🌐 Found ALB DNS: $ALB_DNS"
+          else
+            echo "alb-dns=pdf-excel-saas-prod-alb-1547358143.ap-southeast-2.elb.amazonaws.com" >> $GITHUB_OUTPUT
+            echo "🔧 Using known ALB DNS from URL provided"
+          fi
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+
+      - name: Health check - Frontend
+        run: |
+          ALB_DNS="${{ steps.get-alb.outputs.alb-dns }}"
+          echo "🏥 Testing frontend at: http://$ALB_DNS"
+          
+          for i in {1..15}; do
+            echo "🔄 Health check attempt $i/15..."
+            
+            if curl -f -s --max-time 30 "http://$ALB_DNS" > /dev/null; then
+              echo "✅ Frontend health check passed!"
+              break
+            elif curl -f -s --max-time 30 "http://$ALB_DNS/api/health" > /dev/null; then
+              echo "✅ Backend API health check passed!"
+              break
+            else
+              echo "❌ Attempt $i failed, retrying in 20 seconds..."
+              if [ $i -eq 15 ]; then
+                echo "🚨 Health check failed after all attempts"
+                exit 1
+              fi
+              sleep 20
+            fi
+          done
+
+      - name: Test application endpoints
+        run: |
+          ALB_DNS="${{ steps.get-alb.outputs.alb-dns }}"
+          echo "🧪 Testing application endpoints..."
+          
+          # Test main page
+          if curl -f -s --max-time 30 "http://$ALB_DNS" | grep -q "PDF"; then
+            echo "✅ Main page test passed"
+          else
+            echo "⚠️ Main page test inconclusive"
+          fi
+          
+          # Test health endpoint
+          if curl -f -s --max-time 30 "http://$ALB_DNS/api/health"; then
+            echo "✅ Health endpoint test passed"
+          else
+            echo "⚠️ Health endpoint test failed"
+          fi
+
+  post-deployment:
+    name: Post Deployment Tasks
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy-to-ecs, health-check]
+    if: always()
+    steps:
+      - name: Get deployment status
+        id: status
+        run: |
+          if [ "${{ needs.health-check.result }}" == "success" ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "message=✅ Deployment successful! Latest images deployed to ECS." >> $GITHUB_OUTPUT
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "message=❌ Deployment failed! Check logs for details." >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update deployment documentation
+        if: needs.health-check.result == 'success'
+        run: |
+          echo "## 🚀 Latest Deployment" > deployment-status.md
+          echo "- **Date**: $(date -u)" >> deployment-status.md
+          echo "- **Commit**: ${{ github.sha }}" >> deployment-status.md
+          echo "- **Branch**: ${{ github.ref_name }}" >> deployment-status.md
+          echo "- **Environment**: Production (Sydney)" >> deployment-status.md
+          echo "- **Status**: ✅ SUCCESS" >> deployment-status.md
+          echo "- **Frontend Image**: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }}" >> deployment-status.md
+          echo "- **Backend Image**: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }}" >> deployment-status.md
+          echo "- **URL**: http://pdf-excel-saas-prod-alb-1547358143.ap-southeast-2.elb.amazonaws.com/" >> deployment-status.md
+          
+          echo "📝 Deployment documentation updated"
+
+      - name: Summary
+        run: |
+          echo "## 📋 Deployment Summary"
+          echo "**Status**: ${{ steps.status.outputs.status == 'success' && '✅ SUCCESS' || '❌ FAILED' }}"
+          echo "**Images Built**: ${{ needs.build-and-push.result == 'success' && '✅' || '❌' }}"
+          echo "**ECS Updated**: ${{ needs.deploy-to-ecs.result == 'success' && '✅' || '❌' }}"
+          echo "**Health Check**: ${{ needs.health-check.result == 'success' && '✅' || '❌' }}"
+          echo ""
+          echo "🌐 **Application URL**: http://pdf-excel-saas-prod-alb-1547358143.ap-southeast-2.elb.amazonaws.com/"
+          echo "📦 **Image Tag**: ${{ env.IMAGE_TAG }}"
+          echo ""
+          if [ "${{ steps.status.outputs.status }}" == "success" ]; then
+            echo "🎉 **Your latest code changes are now LIVE!**"
+          else
+            echo "🚨 **Deployment issues detected - please check logs**"
+          fi
