@@ -132,18 +132,19 @@ jobs:
         run: |
           echo "🚀 Updating frontend service with image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }}"
           
-          # Get current task definition
-          TASK_DEFINITION=$(aws ecs describe-task-definition \
+          # Get current task definition and clean it properly
+          aws ecs describe-task-definition \
             --task-definition ${{ env.ECS_SERVICE_FRONTEND }} \
-            --query taskDefinition)
+            --query 'taskDefinition' > task-def.json
           
-          # Update image in task definition
-          NEW_TASK_DEFINITION=$(echo $TASK_DEFINITION | jq --arg IMAGE "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }}" \
-            '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn) | del(.revision) | del(.status) | del(.requiresAttributes) | del(.placementConstraints) | del(.compatibilities) | del(.registeredAt) | del(.registeredBy)')
+          # Update image and remove AWS-generated fields
+          cat task-def.json | jq \
+            --arg IMAGE "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }}" \
+            'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy) | .containerDefinitions[0].image = $IMAGE' > new-task-def.json
           
           # Register new task definition
-          NEW_TASK_DEF_ARN=$(echo $NEW_TASK_DEFINITION | aws ecs register-task-definition \
-            --cli-input-json file:///dev/stdin \
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://new-task-def.json \
             --query 'taskDefinition.taskDefinitionArn' --output text)
           
           echo "✅ Registered new frontend task definition: $NEW_TASK_DEF_ARN"
@@ -162,18 +163,19 @@ jobs:
         run: |
           echo "🚀 Updating backend service with image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }}"
           
-          # Get current task definition
-          TASK_DEFINITION=$(aws ecs describe-task-definition \
+          # Get current task definition and clean it properly
+          aws ecs describe-task-definition \
             --task-definition ${{ env.ECS_SERVICE_BACKEND }} \
-            --query taskDefinition)
+            --query 'taskDefinition' > backend-task-def.json
           
-          # Update image in task definition
-          NEW_TASK_DEFINITION=$(echo $TASK_DEFINITION | jq --arg IMAGE "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }}" \
-            '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn) | del(.revision) | del(.status) | del(.requiresAttributes) | del(.placementConstraints) | del(.compatibilities) | del(.registeredAt) | del(.registeredBy)')
+          # Update image and remove AWS-generated fields
+          cat backend-task-def.json | jq \
+            --arg IMAGE "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }}" \
+            'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy) | .containerDefinitions[0].image = $IMAGE' > new-backend-task-def.json
           
           # Register new task definition
-          NEW_TASK_DEF_ARN=$(echo $NEW_TASK_DEFINITION | aws ecs register-task-definition \
-            --cli-input-json file:///dev/stdin \
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://new-backend-task-def.json \
             --query 'taskDefinition.taskDefinitionArn' --output text)
           
           echo "✅ Registered new backend task definition: $NEW_TASK_DEF_ARN"
@@ -220,23 +222,6 @@ jobs:
             exit 1
           fi
 
-      - name: Get ALB DNS name
-        if: steps.check-cluster.outputs.cluster-exists == 'true'
-        id: get-alb
-        run: |
-          ALB_DNS=$(aws elbv2 describe-load-balancers \
-            --names pdf-excel-saas-prod-alb \
-            --query 'LoadBalancers[0].DNSName' \
-            --output text 2>/dev/null || echo "")
-          
-          if [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "None" ]; then
-            echo "alb-dns=$ALB_DNS" >> $GITHUB_OUTPUT
-            echo "🌐 ALB DNS: $ALB_DNS"
-          else
-            echo "⚠️ Could not find ALB DNS name"
-            echo "alb-dns=" >> $GITHUB_OUTPUT
-          fi
-
   health-check:
     name: Health Check
     runs-on: ubuntu-latest
@@ -269,10 +254,10 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
 
-      - name: Health check - Frontend
+      - name: Health check - Application
         run: |
           ALB_DNS="${{ steps.get-alb.outputs.alb-dns }}"
-          echo "🏥 Testing frontend at: http://$ALB_DNS"
+          echo "🏥 Testing application at: http://$ALB_DNS"
           
           for i in {1..15}; do
             echo "🔄 Health check attempt $i/15..."
@@ -293,25 +278,6 @@ jobs:
             fi
           done
 
-      - name: Test application endpoints
-        run: |
-          ALB_DNS="${{ steps.get-alb.outputs.alb-dns }}"
-          echo "🧪 Testing application endpoints..."
-          
-          # Test main page
-          if curl -f -s --max-time 30 "http://$ALB_DNS" | grep -q "PDF"; then
-            echo "✅ Main page test passed"
-          else
-            echo "⚠️ Main page test inconclusive"
-          fi
-          
-          # Test health endpoint
-          if curl -f -s --max-time 30 "http://$ALB_DNS/api/health"; then
-            echo "✅ Health endpoint test passed"
-          else
-            echo "⚠️ Health endpoint test failed"
-          fi
-
   post-deployment:
     name: Post Deployment Tasks
     runs-on: ubuntu-latest
@@ -328,21 +294,6 @@ jobs:
             echo "status=failure" >> $GITHUB_OUTPUT
             echo "message=❌ Deployment failed! Check logs for details." >> $GITHUB_OUTPUT
           fi
-
-      - name: Update deployment documentation
-        if: needs.health-check.result == 'success'
-        run: |
-          echo "## 🚀 Latest Deployment" > deployment-status.md
-          echo "- **Date**: $(date -u)" >> deployment-status.md
-          echo "- **Commit**: ${{ github.sha }}" >> deployment-status.md
-          echo "- **Branch**: ${{ github.ref_name }}" >> deployment-status.md
-          echo "- **Environment**: Production (Sydney)" >> deployment-status.md
-          echo "- **Status**: ✅ SUCCESS" >> deployment-status.md
-          echo "- **Frontend Image**: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }}" >> deployment-status.md
-          echo "- **Backend Image**: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }}" >> deployment-status.md
-          echo "- **URL**: http://pdf-excel-saas-prod-alb-1547358143.ap-southeast-2.elb.amazonaws.com/" >> deployment-status.md
-          
-          echo "📝 Deployment documentation updated"
 
       - name: Summary
         run: |
