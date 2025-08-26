@@ -1,7 +1,11 @@
 'use client'
 
 import { useState } from 'react'
-import { createClientComponentClient } from '@/lib/supabase'
+// Use the browser-only Supabase client.  Importing from '@/lib/supabase' pulls in
+// server-only utilities (e.g. next/headers) which causes webpack to fail in
+// client components.  See `frontend/src/lib/supabase/client.ts` for the
+// browser-safe implementation.
+import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 
 interface AuthFormProps {
@@ -15,7 +19,9 @@ export default function AuthForm({ mode }: AuthFormProps) {
   const [error, setError] = useState<string | null>(null)
   
   const router = useRouter()
-  const supabase = createClientComponentClient()
+  // Initialise the Supabase client for the browser.  This avoids importing
+  // server‑only modules like `next/headers` in a client component.
+  const supabase = createClient()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -146,7 +152,7 @@ export default function AuthForm({ mode }: AuthFormProps) {
       </form>
 
       <div className="relative my-6">
-        <div className="absolute inset-0 pointer-events-none flex items-center" aria-hidden="true">
+        <div className="absolute inset-0 flex items-center">
           <div className="w-full border-t border-gray-300" />
         </div>
         <div className="relative flex justify-center text-sm">
