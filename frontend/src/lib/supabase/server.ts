@@ -16,3 +16,8 @@ export function createServerSupabase() {
     }
   )
 }
+
+/** Back-compat: some server code imports { createClient } from '@/lib/supabase/server' */
+export function createClient() {
+  return createServerSupabase()
+}

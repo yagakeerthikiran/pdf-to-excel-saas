@@ -1,3 +1,10 @@
+﻿const getStripe = () => {
+  const key = process.env.STRIPE_SECRET_KEY
+  if (!key) {
+    throw new Error('Stripe not configured: STRIPE_SECRET_KEY missing')
+  }
+  return new Stripe(key, { apiVersion: '2024-06-20' })
+};
 import { NextRequest, NextResponse } from 'next/server'
 import Stripe from 'stripe'
 
@@ -17,7 +24,7 @@ export async function POST(request: NextRequest) {
     const userId = request.headers.get('x-user-id') || 'anonymous'
     
     // Create Stripe checkout session
-    const session = await stripe.checkout.sessions.create({
+    const session = await getStripe().checkout.sessions.create({
       mode: 'subscription',
       payment_method_types: ['card'],
       line_items: [
