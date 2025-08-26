@@ -1,28 +1,31 @@
-# ---------- Builder ----------
+﻿# ---------- Builder ----------
 FROM node:18-slim AS builder
 WORKDIR /app
 
-# Ensure devDependencies (tailwindcss, postcss, autoprefixer) are installed
+# Install ALL deps (incl. dev) so Tailwind/PostCSS are available
 ENV NODE_ENV=development
 COPY package.json package-lock.json* ./
 RUN npm ci --legacy-peer-deps
 
-# Copy source and build
+# Build in production mode
 COPY . .
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 # ---------- Runner ----------
 FROM node:18-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 
-# Create non-root user (optional but nice)
+# Create non-root user
 RUN addgroup --gid 1001 nodejs \
  && adduser --system --uid 1001 --gid 1001 nextjs
 
-# Copy the minimal output from the builder (standalone mode)
-# Adjust paths if your next.config.js uses "output: 'standalone'"
+# Minimal runtime payload (Next "standalone" output)
+COPY --from=builder /app/package.json ./
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
