@@ -1,16 +1,17 @@
+﻿"use client";
 'use client'
 
 import { useState, useEffect } from 'react'
 import { PLANS } from '@/lib/stripe'
 import { apiClient } from '@/lib/api'
-import { createClientComponentClient } from '@/lib/supabase'
+import { createClient } from '@/lib/supabase/client'
 import React from 'react'
 
 export default function PricingPlans() {
   const [isLoading, setIsLoading] = useState<string | null>(null)
   const [user, setUser] = useState(null)
   
-  const supabase = createClientComponentClient()
+  const supabase = createClient()
 
   // Check auth status
   useEffect(() => {
@@ -243,3 +244,4 @@ export default function PricingPlans() {
     </div>
   )
 }
+

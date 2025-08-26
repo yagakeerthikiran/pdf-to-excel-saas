@@ -1,7 +1,8 @@
+﻿"use client";
 'use client'
 
 import { useState, useEffect } from 'react'
-import { createClientComponentClient } from '@/lib/supabase'
+import { createClient } from '@/lib/supabase/client'
 import { apiClient } from '@/lib/api'
 import PdfUpload from './PdfUpload'
 
@@ -29,7 +30,7 @@ export default function Dashboard() {
   const [isLoading, setIsLoading] = useState(true)
   const [isCancelling, setIsCancelling] = useState(false)
   
-  const supabase = createClientComponentClient()
+  const supabase = createClient()
 
   useEffect(() => {
     const initialize = async () => {
@@ -150,9 +151,9 @@ export default function Dashboard() {
         <div className="max-w-7xl mx-auto px-4">
           <div className="flex space-x-8">
             {[
-              { key: 'upload', label: 'Convert PDFs', icon: '📄' },
-              { key: 'history', label: 'History', icon: '📊' },
-              { key: 'settings', label: 'Settings', icon: '⚙️' }
+              { key: 'upload', label: 'Convert PDFs', icon: 'ðŸ“„' },
+              { key: 'history', label: 'History', icon: 'ðŸ“Š' },
+              { key: 'settings', label: 'Settings', icon: 'âš™ï¸' }
             ].map((tab) => (
               <button
                 key={tab.key}
@@ -177,7 +178,7 @@ export default function Dashboard() {
         {remainingConversions <= 5 && remainingConversions > 0 && (
           <div className="mb-8 bg-yellow-50 border border-yellow-200 rounded-lg p-4">
             <div className="flex items-center">
-              <span className="text-yellow-600 mr-3">⚠️</span>
+              <span className="text-yellow-600 mr-3">âš ï¸</span>
               <div className="flex-1">
                 <h3 className="text-sm font-medium text-yellow-800">
                   Running Low on Conversions
@@ -203,7 +204,7 @@ export default function Dashboard() {
         {remainingConversions === 0 && (
           <div className="mb-8 bg-red-50 border border-red-200 rounded-lg p-4">
             <div className="flex items-center">
-              <span className="text-red-600 mr-3">🚫</span>
+              <span className="text-red-600 mr-3">ðŸš«</span>
               <div className="flex-1">
                 <h3 className="text-sm font-medium text-red-800">
                   No Conversions Remaining
@@ -291,7 +292,7 @@ export default function Dashboard() {
                               {conversion.filename}
                             </p>
                             <p className="text-xs text-gray-600">
-                              {formatDate(conversion.created_at)} • Status: {conversion.status}
+                              {formatDate(conversion.created_at)} â€¢ Status: {conversion.status}
                             </p>
                           </div>
                         </div>
@@ -394,7 +395,7 @@ export default function Dashboard() {
                         Professional Plan
                       </h3>
                       <p className="text-sm text-gray-600 mt-1">
-                        $29/month • 500 conversions per month
+                        $29/month â€¢ 500 conversions per month
                       </p>
                     </div>
 
@@ -446,3 +447,4 @@ export default function Dashboard() {
     </div>
   )
 }
+
