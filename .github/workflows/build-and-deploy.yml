@@ -68,6 +68,34 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Create production environment file
+        run: |
+          echo "🔧 Creating production environment configuration..."
+          cat > .env.prod << EOF
+          # AWS Configuration
+          AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION=ap-southeast-2
+          AWS_S3_BUCKET_NAME=pdf-excel-saas-prod
+          
+          # Application URLs
+          NEXT_PUBLIC_APP_URL=http://pdf-excel-saas-prod-alb-1547358143.ap-southeast-2.elb.amazonaws.com
+          BACKEND_URL=http://pdf-excel-saas-prod-alb-1547358143.ap-southeast-2.elb.amazonaws.com/api
+          
+          # Database (placeholder for now)
+          DATABASE_URL=postgresql://dbadmin:placeholder@localhost:5432/pdfexcel
+          
+          # Basic JWT secret
+          JWT_SECRET_KEY=your_jwt_secret_key_minimum_32_characters_required_for_security
+          ENCRYPTION_KEY=32_byte_encryption_key_placeholder
+          
+          # Monitoring
+          AUTO_FIX_ENABLED=false
+          MONITORING_INTERVAL=300
+          ERROR_THRESHOLD=20
+          EOF
+          echo "✅ Production environment file created"
+
       - name: Build and push frontend image
         id: build-frontend
         uses: docker/build-push-action@v5
@@ -137,10 +165,17 @@ jobs:
             --task-definition ${{ env.ECS_SERVICE_FRONTEND }} \
             --query 'taskDefinition' > task-def.json
           
-          # Update image and remove AWS-generated fields
+          # Update image and add essential environment variables
           cat task-def.json | jq \
             --arg IMAGE "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }}" \
-            'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy) | .containerDefinitions[0].image = $IMAGE' > new-task-def.json
+            --arg ALB_URL "http://pdf-excel-saas-prod-alb-1547358143.ap-southeast-2.elb.amazonaws.com" \
+            'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy) | 
+            .containerDefinitions[0].image = $IMAGE |
+            .containerDefinitions[0].environment = [
+              {"name": "NEXT_PUBLIC_APP_URL", "value": $ALB_URL},
+              {"name": "BACKEND_URL", "value": ($ALB_URL + "/api")},
+              {"name": "NODE_ENV", "value": "production"}
+            ]' > new-task-def.json
           
           # Register new task definition
           NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
@@ -168,10 +203,21 @@ jobs:
             --task-definition ${{ env.ECS_SERVICE_BACKEND }} \
             --query 'taskDefinition' > backend-task-def.json
           
-          # Update image and remove AWS-generated fields
+          # Update image and add essential environment variables
           cat backend-task-def.json | jq \
             --arg IMAGE "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }}" \
-            'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy) | .containerDefinitions[0].image = $IMAGE' > new-backend-task-def.json
+            --arg AWS_KEY "${{ secrets.AWS_ACCESS_KEY_ID }}" \
+            --arg AWS_SECRET "${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
+            'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy) | 
+            .containerDefinitions[0].image = $IMAGE |
+            .containerDefinitions[0].environment = [
+              {"name": "AWS_ACCESS_KEY_ID", "value": $AWS_KEY},
+              {"name": "AWS_SECRET_ACCESS_KEY", "value": $AWS_SECRET},
+              {"name": "AWS_REGION", "value": "ap-southeast-2"},
+              {"name": "AWS_S3_BUCKET_NAME", "value": "pdf-excel-saas-prod"},
+              {"name": "JWT_SECRET_KEY", "value": "your_jwt_secret_key_minimum_32_characters_required_for_security"},
+              {"name": "ENVIRONMENT", "value": "production"}
+            ]' > new-backend-task-def.json
           
           # Register new task definition
           NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
@@ -285,7 +331,7 @@ jobs:
         run: |
           if [ "${{ needs.health-check.result }}" == "success" ]; then
             echo "status=success" >> $GITHUB_OUTPUT
-            echo "message=✅ Deployment successful! Latest images deployed to ECS." >> $GITHUB_OUTPUT
+            echo "message=✅ Deployment successful! Latest images deployed to ECS with environment variables." >> $GITHUB_OUTPUT
           else
             echo "status=failure" >> $GITHUB_OUTPUT
             echo "message=❌ Deployment failed! Check logs for details." >> $GITHUB_OUTPUT
@@ -303,7 +349,7 @@ jobs:
           echo "📦 **Image Tag**: ${{ env.IMAGE_TAG }}"
           echo ""
           if [ "${{ steps.status.outputs.status }}" == "success" ]; then
-            echo "🎉 **Your latest code changes are now LIVE!**"
+            echo "🎉 **Your latest code changes are now LIVE with proper environment variables!**"
           else
             echo "🚨 **Deployment issues detected - please check logs**"
           fi
