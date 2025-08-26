@@ -1,58 +1,32 @@
-# Dockerfile for Next.js with standalone output
-# --- STAGE 1: BUILDER ---
-# This stage builds the application and generates the standalone output.
+# ---------- Builder ----------
 FROM node:18-slim AS builder
-
-# Set working directory
 WORKDIR /app
 
-# Copy package manager files
+# Ensure devDependencies (tailwindcss, postcss, autoprefixer) are installed
+ENV NODE_ENV=development
 COPY package.json package-lock.json* ./
+RUN npm ci --legacy-peer-deps
 
-# Install ALL dependencies (including devDependencies) for the build process
-RUN npm install --legacy-peer-deps
-
-# Copy the rest of the source code
+# Copy source and build
 COPY . .
-
-# Run the build
-# The 'standalone' output option in next.config.js will create a minimal server
-# in the .next/standalone directory.
 RUN npm run build
 
-
-# --- STAGE 2: RUNNER ---
-# This is the final, small, and secure image for production.
-FROM node:18-slim
-
-# Set working directory
+# ---------- Runner ----------
+FROM node:18-slim AS runner
 WORKDIR /app
-
-# Set environment variables for production
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Create a non-root user for security
-RUN addgroup --gid 1001 nodejs
-RUN adduser --system --uid 1001 --gid 1001 nextjs
+# Create non-root user (optional but nice)
+RUN addgroup --gid 1001 nodejs \
+ && adduser --system --uid 1001 --gid 1001 nextjs
 
-# Copy the standalone output from the builder stage
-# This includes the server, node_modules, and other necessary files.
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-# Copy the static assets (CSS, images, etc.)
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-# Copy the public assets
-COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+# Copy the minimal output from the builder (standalone mode)
+# Adjust paths if your next.config.js uses "output: 'standalone'"
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
 
-# Set the user to the non-root user
 USER nextjs
-
-# Expose the port the app runs on
 EXPOSE 3000
-
-# Healthcheck
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:3000/ || exit 1
-
-# The command to start the standalone server
 CMD ["node", "server.js"]
