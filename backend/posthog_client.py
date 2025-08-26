@@ -2,8 +2,8 @@ import os
 import posthog
 
 # Get PostHog credentials from environment variables
-key: str = os.environ.get("POSTHOG_API_KEY")
-host: str = os.environ.get("POSTHOG_API_HOST", "https://app.posthog.com")
+key: str = os.environ.get("POSTHOG_API_KEY") or os.environ.get("NEXT_PUBLIC_POSTHOG_KEY")
+host: str = os.environ.get("POSTHOG_API_HOST") or os.environ.get("NEXT_PUBLIC_POSTHOG_HOST") or "https://app.posthog.com"
 
 # Initialize the PostHog client
 if key:

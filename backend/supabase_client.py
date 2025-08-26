@@ -7,7 +7,7 @@ logger = structlog.get_logger(__name__)
 # Get Supabase credentials from environment variables
 url: str = os.environ.get("SUPABASE_URL")
 # For backend operations, we need the service role key to bypass RLS.
-key: str = os.environ.get("SUPABASE_SERVICE_KEY")
+key: str = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
 # Initialize the Supabase client
 supabase: Client = None

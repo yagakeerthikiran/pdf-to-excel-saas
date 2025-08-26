@@ -49,7 +49,7 @@ logger = structlog.get_logger(__name__)
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
 # Configure Sentry
-sentry_dsn = os.getenv("SENTRY_DSN")
+sentry_dsn = os.getenv("SENTRY_DSN") or os.getenv("NEXT_PUBLIC_SENTRY_DSN")
 if sentry_dsn:
     sentry_sdk.init(
         dsn=sentry_dsn,
@@ -122,8 +122,8 @@ def generate_upload_url(req: GenerateUploadUrlRequest, _: dict = Depends(enforce
     Generates a pre-signed URL for uploading a file to S3.
     This endpoint is protected by usage limit enforcement.
     """
-    s3_client = boto3.client('s3', region_name=os.getenv("AWS_REGION"))
-    bucket_name = os.getenv("S3_BUCKET_NAME")
+    s3_client = boto3.client('s3', region_name=os.getenv("AWS_REGION", "ap-southeast-2"))
+    bucket_name = os.getenv("S3_BUCKET_NAME") or os.getenv("AWS_S3_BUCKET_NAME")
     object_key = f"uploads/{req.filename}"
 
     try:
@@ -237,8 +237,8 @@ async def convert_pdf(req: ConversionRequest, user_id: str = Depends(get_current
     """
     logger.info("Received request to convert file", file_key=req.fileKey, user_id=user_id)
 
-    s3_client = boto3.client('s3', region_name=os.getenv("AWS_REGION"))
-    bucket_name = os.getenv("S3_BUCKET_NAME")
+    s3_client = boto3.client('s3', region_name=os.getenv("AWS_REGION", "ap-southeast-2"))
+    bucket_name = os.getenv("S3_BUCKET_NAME") or os.getenv("AWS_S3_BUCKET_NAME")
 
     base_filename = os.path.splitext(os.path.basename(req.fileKey))[0]
 

@@ -1,8 +1,4 @@
 export default function HomePage() {
-  // Get build info for deployment verification
-  const buildTime = new Date().toISOString();
-  const buildId = process.env.NEXT_PUBLIC_BUILD_ID || 'development';
-  
   return (
     <div className="min-h-screen">
       {/* Hero Section */}
@@ -19,12 +15,12 @@ export default function HomePage() {
           </p>
           
           <div className="space-y-4 sm:space-y-0 sm:space-x-4 sm:flex sm:justify-center">
-            <button className="btn-primary w-full sm:w-auto">
+            <Link href="/auth/signup" className="btn-primary w-full sm:w-auto">
               Start Converting Now
-            </button>
-            <button className="btn-secondary w-full sm:w-auto bg-white text-gray-800 px-6 py-3 rounded-lg font-semibold hover:bg-gray-100 transition-colors">
+            </Link>
+            <Link href="/pricing" className="btn-secondary w-full sm:w-auto">
               View Pricing
-            </button>
+            </Link>
           </div>
           
           <div className="mt-12 card p-6 max-w-md mx-auto">
@@ -84,24 +80,12 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Deployment Status */}
-      <section className="py-8 bg-gray-50">
-        <div className="container mx-auto px-4 text-center">
-          <div className="text-sm text-gray-500 space-y-2">
-            <p>🟢 <strong>Services Status:</strong> All systems operational</p>
-            <p>🚀 <strong>Latest Deploy:</strong> {buildTime.split('T')[0]} {buildTime.split('T')[1].split('.')[0]} UTC</p>
-            <p>📦 <strong>Build ID:</strong> {buildId}</p>
-            <p>🌏 <strong>Region:</strong> Australia (ap-southeast-2)</p>
-          </div>
-        </div>
-      </section>
-
       {/* Footer */}
       <footer className="bg-gray-800 text-white py-8">
         <div className="container mx-auto px-4 text-center">
           <p>&copy; 2024 PDF to Excel SaaS. Built for Australian businesses.</p>
           <p className="text-gray-400 text-sm mt-2">
-            Backend API: Ready | Frontend: Ready | CI/CD: Active
+            Backend API: Ready | Frontend: Coming Soon
           </p>
         </div>
       </footer>
