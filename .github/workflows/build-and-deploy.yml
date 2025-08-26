@@ -197,9 +197,7 @@ jobs:
           echo "🔍 Waiting for frontend deployment..."
           aws ecs wait services-stable \
             --cluster ${{ env.ECS_CLUSTER }} \
-            --services ${{ env.ECS_SERVICE_FRONTEND }} \
-            --max-attempts 20 \
-            --delay 30
+            --services ${{ env.ECS_SERVICE_FRONTEND }}
           
           if [ $? -eq 0 ]; then
             echo "✅ Frontend deployment completed successfully"
@@ -211,9 +209,7 @@ jobs:
           echo "🔍 Waiting for backend deployment..."
           aws ecs wait services-stable \
             --cluster ${{ env.ECS_CLUSTER }} \
-            --services ${{ env.ECS_SERVICE_BACKEND }} \
-            --max-attempts 20 \
-            --delay 30
+            --services ${{ env.ECS_SERVICE_BACKEND }}
           
           if [ $? -eq 0 ]; then
             echo "✅ Backend deployment completed successfully"
