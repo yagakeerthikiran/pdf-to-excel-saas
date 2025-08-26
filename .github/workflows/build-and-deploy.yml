@@ -25,6 +25,7 @@ env:
   ECS_SERVICE_FRONTEND: pdf-excel-saas-prod-frontend
   ECS_SERVICE_BACKEND: pdf-excel-saas-prod-backend
   IMAGE_TAG: ${{ github.sha }}
+  PARAM_PREFIX: /pdf-excel-saas/prod
 
 jobs:
   validate-environment:
@@ -68,34 +69,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Create production environment file
-        run: |
-          echo "🔧 Creating production environment configuration..."
-          cat > .env.prod << EOF
-          # AWS Configuration
-          AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION=ap-southeast-2
-          AWS_S3_BUCKET_NAME=pdf-excel-saas-prod
-          
-          # Application URLs
-          NEXT_PUBLIC_APP_URL=http://pdf-excel-saas-prod-alb-1547358143.ap-southeast-2.elb.amazonaws.com
-          BACKEND_URL=http://pdf-excel-saas-prod-alb-1547358143.ap-southeast-2.elb.amazonaws.com/api
-          
-          # Database (placeholder for now)
-          DATABASE_URL=postgresql://dbadmin:placeholder@localhost:5432/pdfexcel
-          
-          # Basic JWT secret
-          JWT_SECRET_KEY=your_jwt_secret_key_minimum_32_characters_required_for_security
-          ENCRYPTION_KEY=32_byte_encryption_key_placeholder
-          
-          # Monitoring
-          AUTO_FIX_ENABLED=false
-          MONITORING_INTERVAL=300
-          ERROR_THRESHOLD=20
-          EOF
-          echo "✅ Production environment file created"
-
       - name: Build and push frontend image
         id: build-frontend
         uses: docker/build-push-action@v5
@@ -124,11 +97,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Output image URIs
-        run: |
-          echo "frontend-image=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }}" >> $GITHUB_OUTPUT
-          echo "backend-image=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }}" >> $GITHUB_OUTPUT
-
   deploy-to-ecs:
     name: Deploy to ECS
     runs-on: ubuntu-latest
@@ -143,6 +111,42 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Fetch environment variables from Parameter Store
+        id: fetch-params
+        run: |
+          echo "🔐 Fetching configuration from AWS Parameter Store..."
+          
+          # Function to get parameter (with fallback)
+          get_param() {
+            local param_name="$1"
+            local fallback_value="$2"
+            local value=$(aws ssm get-parameter --region ${{ env.AWS_REGION }} --name "${{ env.PARAM_PREFIX }}/$param_name" --query 'Parameter.Value' --output text 2>/dev/null || echo "$fallback_value")
+            echo "$value"
+          }
+
+          # Fetch basic parameters with fallbacks
+          APP_URL=$(get_param "app/frontend-url" "http://pdf-excel-saas-prod-alb-1547358143.ap-southeast-2.elb.amazonaws.com")
+          BACKEND_URL=$(get_param "app/backend-url" "http://pdf-excel-saas-prod-alb-1547358143.ap-southeast-2.elb.amazonaws.com/api")
+          JWT_SECRET=$(get_param "security/jwt-secret" "fallback_jwt_secret_min_32_chars_required")
+          S3_BUCKET=$(get_param "aws/s3-bucket" "pdf-excel-saas-prod")
+
+          # Set outputs for use in later steps
+          echo "app_url=$APP_URL" >> $GITHUB_OUTPUT
+          echo "backend_url=$BACKEND_URL" >> $GITHUB_OUTPUT
+          echo "jwt_secret=$JWT_SECRET" >> $GITHUB_OUTPUT
+          echo "s3_bucket=$S3_BUCKET" >> $GITHUB_OUTPUT
+
+          # Try to fetch optional Supabase parameters
+          SUPABASE_URL=$(get_param "supabase/url" "")
+          SUPABASE_ANON_KEY=$(get_param "supabase/anon-key" "")
+          STRIPE_PUBLISHABLE_KEY=$(get_param "stripe/publishable-key" "")
+          
+          echo "supabase_url=$SUPABASE_URL" >> $GITHUB_OUTPUT
+          echo "supabase_anon_key=$SUPABASE_ANON_KEY" >> $GITHUB_OUTPUT
+          echo "stripe_publishable_key=$STRIPE_PUBLISHABLE_KEY" >> $GITHUB_OUTPUT
+
+          echo "✅ Configuration fetched successfully"
 
       - name: Check if ECS cluster exists
         id: check-cluster
@@ -160,80 +164,101 @@ jobs:
         run: |
           echo "🚀 Updating frontend service with image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }}"
           
-          # Get current task definition and clean it properly
+          # Get current task definition
           aws ecs describe-task-definition \
             --task-definition ${{ env.ECS_SERVICE_FRONTEND }} \
             --query 'taskDefinition' > task-def.json
-          
-          # Update image and add essential environment variables
+
+          # Build comprehensive environment variables array for frontend
+          ENV_VARS='[
+            {"name": "NEXT_PUBLIC_APP_URL", "value": "${{ steps.fetch-params.outputs.app_url }}"},
+            {"name": "BACKEND_URL", "value": "${{ steps.fetch-params.outputs.backend_url }}"},
+            {"name": "NODE_ENV", "value": "production"}
+          ]'
+
+          # Add optional Supabase variables if available
+          if [ -n "${{ steps.fetch-params.outputs.supabase_url }}" ]; then
+            ENV_VARS=$(echo $ENV_VARS | jq '. + [{"name": "NEXT_PUBLIC_SUPABASE_URL", "value": "${{ steps.fetch-params.outputs.supabase_url }}"}]')
+          fi
+
+          if [ -n "${{ steps.fetch-params.outputs.supabase_anon_key }}" ]; then
+            ENV_VARS=$(echo $ENV_VARS | jq '. + [{"name": "NEXT_PUBLIC_SUPABASE_ANON_KEY", "value": "${{ steps.fetch-params.outputs.supabase_anon_key }}"}]')
+          fi
+
+          if [ -n "${{ steps.fetch-params.outputs.stripe_publishable_key }}" ]; then
+            ENV_VARS=$(echo $ENV_VARS | jq '. + [{"name": "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY", "value": "${{ steps.fetch-params.outputs.stripe_publishable_key }}"}]')
+          fi
+
+          # Update task definition
           cat task-def.json | jq \
             --arg IMAGE "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }}" \
-            --arg ALB_URL "http://pdf-excel-saas-prod-alb-1547358143.ap-southeast-2.elb.amazonaws.com" \
+            --argjson ENV_VARS "$ENV_VARS" \
             'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy) | 
             .containerDefinitions[0].image = $IMAGE |
-            .containerDefinitions[0].environment = [
-              {"name": "NEXT_PUBLIC_APP_URL", "value": $ALB_URL},
-              {"name": "BACKEND_URL", "value": ($ALB_URL + "/api")},
-              {"name": "NODE_ENV", "value": "production"}
-            ]' > new-task-def.json
-          
-          # Register new task definition
-          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
-            --cli-input-json file://new-task-def.json \
-            --query 'taskDefinition.taskDefinitionArn' --output text)
-          
+            .containerDefinitions[0].environment = $ENV_VARS' > new-task-def.json
+
+          # Register and update
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://new-task-def.json --query 'taskDefinition.taskDefinitionArn' --output text)
           echo "✅ Registered new frontend task definition: $NEW_TASK_DEF_ARN"
-          
-          # Update service
+
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
             --service ${{ env.ECS_SERVICE_FRONTEND }} \
             --task-definition $NEW_TASK_DEF_ARN \
             --force-new-deployment
-          
-          echo "🔄 Frontend service update initiated"
 
       - name: Update ECS service - Backend
         if: steps.check-cluster.outputs.cluster-exists == 'true'
         run: |
           echo "🚀 Updating backend service with image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }}"
           
-          # Get current task definition and clean it properly
+          # Get current task definition
           aws ecs describe-task-definition \
             --task-definition ${{ env.ECS_SERVICE_BACKEND }} \
             --query 'taskDefinition' > backend-task-def.json
-          
-          # Update image and add essential environment variables
+
+          # Get secure parameters for backend
+          DATABASE_URL=$(aws ssm get-parameter --region ${{ env.AWS_REGION }} --name "${{ env.PARAM_PREFIX }}/database/url" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null || echo "postgresql://placeholder:password@localhost:5432/pdfexcel")
+          STRIPE_SECRET=$(aws ssm get-parameter --region ${{ env.AWS_REGION }} --name "${{ env.PARAM_PREFIX }}/stripe/secret-key" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+          SUPABASE_SERVICE_KEY=$(aws ssm get-parameter --region ${{ env.AWS_REGION }} --name "${{ env.PARAM_PREFIX }}/supabase/service-key" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+
+          # Build environment variables for backend
+          ENV_VARS='[
+            {"name": "AWS_ACCESS_KEY_ID", "value": "${{ secrets.AWS_ACCESS_KEY_ID }}"},
+            {"name": "AWS_SECRET_ACCESS_KEY", "value": "${{ secrets.AWS_SECRET_ACCESS_KEY }}"},
+            {"name": "AWS_REGION", "value": "ap-southeast-2"},
+            {"name": "AWS_S3_BUCKET_NAME", "value": "${{ steps.fetch-params.outputs.s3_bucket }}"},
+            {"name": "JWT_SECRET_KEY", "value": "${{ steps.fetch-params.outputs.jwt_secret }}"},
+            {"name": "DATABASE_URL", "value": "'$DATABASE_URL'"},
+            {"name": "ENVIRONMENT", "value": "production"}
+          ]'
+
+          # Add optional secure variables if available
+          if [ -n "$STRIPE_SECRET" ]; then
+            ENV_VARS=$(echo $ENV_VARS | jq '. + [{"name": "STRIPE_SECRET_KEY", "value": "'$STRIPE_SECRET'"}]')
+          fi
+
+          if [ -n "$SUPABASE_SERVICE_KEY" ]; then
+            ENV_VARS=$(echo $ENV_VARS | jq '. + [{"name": "SUPABASE_SERVICE_ROLE_KEY", "value": "'$SUPABASE_SERVICE_KEY'"}]')
+          fi
+
+          # Update task definition
           cat backend-task-def.json | jq \
             --arg IMAGE "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }}" \
-            --arg AWS_KEY "${{ secrets.AWS_ACCESS_KEY_ID }}" \
-            --arg AWS_SECRET "${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
+            --argjson ENV_VARS "$ENV_VARS" \
             'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy) | 
             .containerDefinitions[0].image = $IMAGE |
-            .containerDefinitions[0].environment = [
-              {"name": "AWS_ACCESS_KEY_ID", "value": $AWS_KEY},
-              {"name": "AWS_SECRET_ACCESS_KEY", "value": $AWS_SECRET},
-              {"name": "AWS_REGION", "value": "ap-southeast-2"},
-              {"name": "AWS_S3_BUCKET_NAME", "value": "pdf-excel-saas-prod"},
-              {"name": "JWT_SECRET_KEY", "value": "your_jwt_secret_key_minimum_32_characters_required_for_security"},
-              {"name": "ENVIRONMENT", "value": "production"}
-            ]' > new-backend-task-def.json
-          
-          # Register new task definition
-          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
-            --cli-input-json file://new-backend-task-def.json \
-            --query 'taskDefinition.taskDefinitionArn' --output text)
-          
+            .containerDefinitions[0].environment = $ENV_VARS' > new-backend-task-def.json
+
+          # Register and update
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://new-backend-task-def.json --query 'taskDefinition.taskDefinitionArn' --output text)
           echo "✅ Registered new backend task definition: $NEW_TASK_DEF_ARN"
-          
-          # Update service
+
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
             --service ${{ env.ECS_SERVICE_BACKEND }} \
             --task-definition $NEW_TASK_DEF_ARN \
             --force-new-deployment
-          
-          echo "🔄 Backend service update initiated"
 
       - name: Wait for deployment completion
         if: steps.check-cluster.outputs.cluster-exists == 'true'
@@ -241,28 +266,12 @@ jobs:
           echo "⏳ Waiting for services to stabilize..."
           
           echo "🔍 Waiting for frontend deployment..."
-          aws ecs wait services-stable \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --services ${{ env.ECS_SERVICE_FRONTEND }}
-          
-          if [ $? -eq 0 ]; then
-            echo "✅ Frontend deployment completed successfully"
-          else
-            echo "❌ Frontend deployment timed out or failed"
-            exit 1
-          fi
+          aws ecs wait services-stable --cluster ${{ env.ECS_CLUSTER }} --services ${{ env.ECS_SERVICE_FRONTEND }}
+          echo "✅ Frontend deployment completed"
           
           echo "🔍 Waiting for backend deployment..."
-          aws ecs wait services-stable \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --services ${{ env.ECS_SERVICE_BACKEND }}
-          
-          if [ $? -eq 0 ]; then
-            echo "✅ Backend deployment completed successfully"
-          else
-            echo "❌ Backend deployment timed out or failed"
-            exit 1
-          fi
+          aws ecs wait services-stable --cluster ${{ env.ECS_CLUSTER }} --services ${{ env.ECS_SERVICE_BACKEND }}
+          echo "✅ Backend deployment completed"
 
   health-check:
     name: Health Check
@@ -275,39 +284,18 @@ jobs:
           echo "⏳ Waiting 60 seconds for services to fully start..."
           sleep 60
 
-      - name: Get ALB DNS name
-        id: get-alb
-        run: |
-          aws configure set region ${{ env.AWS_REGION }}
-          
-          ALB_DNS=$(aws elbv2 describe-load-balancers \
-            --query 'LoadBalancers[?contains(LoadBalancerName, `pdf-excel-saas`)].DNSName' \
-            --output text 2>/dev/null || echo "")
-          
-          if [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "None" ]; then
-            echo "alb-dns=$ALB_DNS" >> $GITHUB_OUTPUT
-            echo "🌐 Found ALB DNS: $ALB_DNS"
-          else
-            echo "alb-dns=pdf-excel-saas-prod-alb-1547358143.ap-southeast-2.elb.amazonaws.com" >> $GITHUB_OUTPUT
-            echo "🔧 Using known ALB DNS from URL provided"
-          fi
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
-
       - name: Health check - Application
         run: |
-          ALB_DNS="${{ steps.get-alb.outputs.alb-dns }}"
-          echo "🏥 Testing application at: http://$ALB_DNS"
+          ALB_URL="http://pdf-excel-saas-prod-alb-1547358143.ap-southeast-2.elb.amazonaws.com"
+          echo "🏥 Testing application at: $ALB_URL"
           
           for i in {1..15}; do
             echo "🔄 Health check attempt $i/15..."
             
-            if curl -f -s --max-time 30 "http://$ALB_DNS" > /dev/null; then
+            if curl -f -s --max-time 30 "$ALB_URL" > /dev/null; then
               echo "✅ Frontend health check passed!"
               break
-            elif curl -f -s --max-time 30 "http://$ALB_DNS/api/health" > /dev/null; then
+            elif curl -f -s --max-time 30 "$ALB_URL/api/health" > /dev/null; then
               echo "✅ Backend API health check passed!"
               break
             else
@@ -326,21 +314,10 @@ jobs:
     needs: [build-and-push, deploy-to-ecs, health-check]
     if: always()
     steps:
-      - name: Get deployment status
-        id: status
-        run: |
-          if [ "${{ needs.health-check.result }}" == "success" ]; then
-            echo "status=success" >> $GITHUB_OUTPUT
-            echo "message=✅ Deployment successful! Latest images deployed to ECS with environment variables." >> $GITHUB_OUTPUT
-          else
-            echo "status=failure" >> $GITHUB_OUTPUT
-            echo "message=❌ Deployment failed! Check logs for details." >> $GITHUB_OUTPUT
-          fi
-
       - name: Summary
         run: |
           echo "## 📋 Deployment Summary"
-          echo "**Status**: ${{ steps.status.outputs.status == 'success' && '✅ SUCCESS' || '❌ FAILED' }}"
+          echo "**Status**: ${{ needs.health-check.result == 'success' && '✅ SUCCESS' || '❌ FAILED' }}"
           echo "**Images Built**: ${{ needs.build-and-push.result == 'success' && '✅' || '❌' }}"
           echo "**ECS Updated**: ${{ needs.deploy-to-ecs.result == 'success' && '✅' || '❌' }}"
           echo "**Health Check**: ${{ needs.health-check.result == 'success' && '✅' || '❌' }}"
@@ -348,8 +325,8 @@ jobs:
           echo "🌐 **Application URL**: http://pdf-excel-saas-prod-alb-1547358143.ap-southeast-2.elb.amazonaws.com/"
           echo "📦 **Image Tag**: ${{ env.IMAGE_TAG }}"
           echo ""
-          if [ "${{ steps.status.outputs.status }}" == "success" ]; then
-            echo "🎉 **Your latest code changes are now LIVE with proper environment variables!**"
+          if [ "${{ needs.health-check.result }}" == "success" ]; then
+            echo "🎉 **Deployment successful with Parameter Store configuration!**"
           else
-            echo "🚨 **Deployment issues detected - please check logs**"
+            echo "🚨 **Deployment issues detected - check logs**"
           fi
