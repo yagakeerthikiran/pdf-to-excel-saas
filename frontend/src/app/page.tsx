@@ -42,9 +42,9 @@ export default function HomePage() {
       </header>
 
       {/* Hero Section */}
-      <section className="bg-gradient-to-r from-green-600 to-blue-700 min-h-screen flex items-center justify-center text-white">
+      <section className="bg-black min-h-screen flex items-center justify-center text-white">
         <div className="max-w-7xl mx-auto px-4 text-center">
-          <h1 className="text-5xl md:text-7xl font-bold mb-6">
+          <h1 className="text-5xl md:text-7xl font-bold mb-6 text-green-400">
             PDF to Excel
             <span className="block text-yellow-300">Made Simple</span>
           </h1>
@@ -69,8 +69,8 @@ export default function HomePage() {
             </Link>
           </div>
           
-          <div className="mt-12 bg-white/10 backdrop-blur-sm rounded-lg p-6 max-w-md mx-auto">
-            <h3 className="text-lg font-semibold mb-2">🚀 Build Timestamp for Debugging</h3>
+          <div className="mt-12 bg-green-900/50 backdrop-blur-sm rounded-lg p-6 max-w-md mx-auto border border-green-500">
+            <h3 className="text-lg font-semibold mb-2 text-green-300">🚀 Build Timestamp for Debugging</h3>
             <p className="text-gray-200 text-sm">
               This page was built on: <br />
               <strong className="text-yellow-300">{buildTimestamp}</strong>
