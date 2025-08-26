@@ -1,10 +1,12 @@
-name: Build and Push to ECR
+# ⚠️ DEPRECATED - Use build-and-deploy.yml instead
+# This workflow is deprecated and will be removed
+# The new unified pipeline handles both build and ECS deployment
+
+name: "[DEPRECATED] Build and Push to ECR"
 
 on:
-  push:
-    branches:
-      - 'feat/infrastructure-clean'
-  workflow_dispatch: # Allows manual triggering
+  # Disabled - use build-and-deploy.yml workflow instead
+  workflow_dispatch: # Only allow manual runs for emergency
 
 env:
   AWS_REGION: ap-southeast-2
@@ -14,56 +16,19 @@ env:
   IMAGE_TAG: latest
 
 jobs:
-  build-and-push-frontend:
-    name: Build and Push Frontend
+  deprecated-warning:
+    name: Deprecated Workflow Warning
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
-
-      - name: Build and push frontend image
+      - name: Warning Message
         run: |
-          docker build \
-            --file ./frontend/Dockerfile.simple \
-            --tag ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }} \
-            ./frontend
-          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ env.IMAGE_TAG }}
-
-  build-and-push-backend:
-    name: Build and Push Backend
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
-
-      - name: Build and push backend image
-        run: |
-          docker build \
-            --file ./backend/Dockerfile.simple \
-            --tag ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }} \
-            ./backend
-          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ env.IMAGE_TAG }}
+          echo "⚠️  WARNING: This workflow is DEPRECATED"
+          echo "🔄 Please use the 'build-and-deploy.yml' workflow instead"
+          echo "🚀 The new workflow provides:"
+          echo "   • Unified build and deployment"
+          echo "   • Automatic ECS service updates"
+          echo "   • Health checks and monitoring"
+          echo "   • Better error handling"
+          echo ""
+          echo "💡 This workflow will be removed in future releases"
+          exit 1
