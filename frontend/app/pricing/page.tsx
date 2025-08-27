@@ -1,3 +1,6 @@
+﻿export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
+
 import PricingPlans from '@/components/PricingPlans'
 
 export default function PricingPage() {
@@ -7,3 +10,4 @@ export default function PricingPage() {
     </div>
   )
 }
+
