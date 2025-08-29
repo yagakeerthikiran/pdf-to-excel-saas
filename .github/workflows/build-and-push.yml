@@ -3,7 +3,8 @@ name: Build and Push to ECR
 on:
   push:
     branches:
-      - 'feat/infrastructure-clean, preview/dev'
+      - 'preview/dev'
+      - 'feat/infrastructure-clean'
   workflow_dispatch: # Allows manual triggering
 
 env:
