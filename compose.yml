@@ -1,0 +1,29 @@
+services:
+  frontend:
+    image: ghcr.io/yagakeerthikiran/pdf-to-excel-saas/frontend:aff9952  # e.g. ghcr.io/yagakeerthikiran/pdf-to-excel-saas-frontend:feat-infrastructure-clean
+    # OR build from your local tree instead of pulling:
+    # build:
+    #   context: ./frontend
+    #   dockerfile: Dockerfile.simple
+    env_file:
+      - ./frontend/.env.local
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    image: ghcr.io/yagakeerthikiran/pdf-to-excel-saas/backend:aff9952   # e.g. ghcr.io/.../pdf-to-excel-saas-backend:feat-infrastructure-clean
+    # OR:
+    # build:
+    #   context: ./backend
+    #   dockerfile: Dockerfile.simple
+    env_file:
+      - ./backend/.env
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
